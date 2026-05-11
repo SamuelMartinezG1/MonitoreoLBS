@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Entorno
+.env
+.env.*
+!.env.example
+
+# Logs / temporales
+*.log
+logs/
+*.tmp
+*.bak
+
+# IDE / SO
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Datos locales / volúmenes Docker
+pgdata/
+influxdata/
+backups/
+*.sqlite3
+
+# Cloudflare
+cloudflared/*.json
+cloudflared/cert.pem
+
+# Tests / coverage
+.pytest_cache/
+.coverage
+htmlcov/

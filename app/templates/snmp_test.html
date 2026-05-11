@@ -1,0 +1,307 @@
+{% extends "base.html" %}
+
+{% block title %}Test SNMP{% endblock %}
+{% block body_class %}{% endblock %}
+
+{% block content %}
+    <div class="container-fluid p-4">
+        <div class="row">
+            <!-- Columna Izquierda: Formulario de Prueba -->
+            <div class="col-md-5">
+                <div class="test-card">
+                    <h4 class="text-white mb-3">
+                        <i class="bi bi-broadcast-pin text-danger me-2"></i>Prueba de Conexión SNMP
+                    </h4>
+                    <p class="text-muted small">Prueba la conectividad SNMP con dispositivos UPS en red local o
+                        ZeroTier.</p>
+
+                    <form id="testForm">
+                        <!-- IP Address -->
+                        <div class="mb-3">
+                            <label class="form-label text-white-50 small fw-bold">DIRECCIÓN IP</label>
+                            <div class="input-group">
+                                <span class="input-group-text bg-dark border-secondary text-secondary">
+                                    <i class="bi bi-globe"></i>
+                                </span>
+                                <input type="text" class="form-control bg-dark text-white border-secondary" id="ipInput"
+                                    placeholder="192.168.1.XXX o 10.147.17.X (ZeroTier)" required>
+                            </div>
+                            <small class="text-muted">Ejemplos: 192.168.1.100 (local), 10.147.17.2 (ZeroTier)</small>
+                        </div>
+
+                        <!-- Port y Community en una fila -->
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6">
+                                <label class="form-label text-white-50 small fw-bold">PUERTO SNMP</label>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-dark border-secondary text-secondary">
+                                        <i class="bi bi-door-open"></i>
+                                    </span>
+                                    <input type="number" class="form-control bg-dark text-white border-secondary"
+                                        id="portInput" value="161">
+                                </div>
+                                <small class="text-muted">161 std, 8161 RUT956</small>
+                            </div>
+
+                            <div class="col-md-6">
+                                <label class="form-label text-white-50 small fw-bold">COMMUNITY</label>
+                                <div class="input-group">
+                                    <span class="input-group-text bg-dark border-secondary text-secondary">
+                                        <i class="bi bi-key"></i>
+                                    </span>
+                                    <input type="text" class="form-control bg-dark text-white border-secondary"
+                                        id="communityInput" value="public">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Botón de Prueba -->
+                        <button type="submit" class="btn btn-danger w-100 fw-bold py-2">
+                            <i class="bi bi-lightning-charge-fill me-2"></i>PROBAR CONEXIÓN
+                        </button>
+                    </form>
+
+                    <!-- Área de Estado -->
+                    <div id="testStatus" class="mt-4" style="display:none;">
+                        <div class="spinner-container">
+                            <div class="spinner-border text-danger" role="status"></div>
+                            <span class="text-white">Conectando al UPS...</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Query OID Personalizado -->
+                <div class="test-card mt-4">
+                    <h5 class="text-white mb-3">
+                        <i class="bi bi-code-square text-info me-2"></i>Consulta OID Personalizado
+                    </h5>
+
+                    <form id="oidForm">
+                        <div class="mb-3">
+                            <label class="form-label text-white-50 small">OID (ej:
+                                .1.3.6.1.4.1.56788.1.1.1.1.3.0)</label>
+                            <input type="text" class="form-control bg-dark text-white border-secondary" id="customOid"
+                                placeholder=".1.3.6.1.4.1.56788...">
+                        </div>
+                        <button type="submit" class="btn btn-outline-info btn-sm w-100">
+                            <i class="bi bi-search me-2"></i>Consultar OID
+                        </button>
+                    </form>
+
+                    <div id="oidResult" class="result-box" style="display:none; margin-top: 1rem;">
+                        <div id="oidContent"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Columna Derecha: Resultados -->
+            <div class="col-md-7">
+                <div class="test-card">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h4 class="text-white mb-0">
+                            <i class="bi bi-clipboard-data text-success me-2"></i>Resultados
+                        </h4>
+                        <div id="connectionStatus"></div>
+                    </div>
+
+                    <div id="resultsContainer">
+                        <div class="text-center text-muted py-5">
+                            <i class="bi bi-lightning-charge" style="font-size: 4rem; opacity: 0.2;"></i>
+                            <p class="mt-3">Esperando prueba de conexión...</p>
+                            <small>Ingresa una IP y presiona "PROBAR CONEXIÓN"</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        const testForm = document.getElementById('testForm');
+        const oidForm = document.getElementById('oidForm');
+        const resultsContainer = document.getElementById('resultsContainer');
+        const testStatus = document.getElementById('testStatus');
+        const connectionStatus = document.getElementById('connectionStatus');
+
+        // Guardar configuración para queries OID
+        let lastConfig = { ip: '', port: 161, community: 'public' };
+
+        testForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const ip = document.getElementById('ipInput').value.trim();
+            const port = parseInt(document.getElementById('portInput').value);
+            const community = document.getElementById('communityInput').value.trim();
+
+            // Guardar config
+            lastConfig = { ip, port, community };
+
+            // Mostrar estado de carga
+            testStatus.style.display = 'block';
+            resultsContainer.innerHTML = '<div class="text-center text-muted py-5"><div class="spinner-border text-secondary" role="status"></div><p class="mt-3">Conectando...</p></div>';
+            connectionStatus.innerHTML = '<span class="status-badge badge-error">PROBANDO...</span>';
+
+            try {
+                const response = await fetch('/api/snmp/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ip, port, community })
+                });
+
+                const data = await response.json();
+                testStatus.style.display = 'none';
+
+                if (data.status === 'success' && data.connected) {
+                    displayResults(data);
+                    connectionStatus.innerHTML = '<span class="status-badge badge-success">✓ CONECTADO</span>';
+                } else {
+                    displayError(data.error || 'Error desconocido');
+                    connectionStatus.innerHTML = '<span class="status-badge badge-error">✗ ERROR</span>';
+                }
+
+            } catch (error) {
+                testStatus.style.display = 'none';
+                displayError(`Error de red: ${error.message}`);
+                connectionStatus.innerHTML = '<span class="status-badge badge-error">✗ ERROR</span>';
+            }
+        });
+
+        function displayResults(data) {
+            let html = '';
+
+            // Información del Dispositivo
+            if (data.device_info && Object.keys(data.device_info).length > 0) {
+                html += '<div class="result-box success-box mb-3">';
+                html += '<h6 class="text-success mb-3"><i class="bi bi-info-circle me-2"></i>Información del Dispositivo</h6>';
+                if (data.device_info.company_name) {
+                    html += `<div class="metric-row"><span class="metric-label">Fabricante:</span><span class="metric-value">${data.device_info.company_name}</span></div>`;
+                }
+                if (data.device_info.model) {
+                    html += `<div class="metric-row"><span class="metric-label">Modelo:</span><span class="metric-value">${data.device_info.model}</span></div>`;
+                }
+                if (data.device_info.serial_number) {
+                    html += `<div class="metric-row"><span class="metric-label">Número de Serie:</span><span class="metric-value">${data.device_info.serial_number}</span></div>`;
+                }
+                if (data.device_info.rated_power) {
+                    html += `<div class="metric-row"><span class="metric-label">Potencia Nominal:</span><span class="metric-value">${data.device_info.rated_power} VA</span></div>`;
+                }
+                html += '</div>';
+            }
+
+            // Batería
+            if (data.battery_data && Object.keys(data.battery_data).length > 0) {
+                html += '<div class="result-box success-box mb-3">';
+                html += '<h6 class="text-warning mb-3"><i class="bi bi-battery-charging me-2"></i>Datos de Batería</h6>';
+                if (data.battery_data.voltage) {
+                    html += `<div class="metric-row"><span class="metric-label">Voltaje:</span><span class="metric-value">${data.battery_data.voltage} ${data.battery_data.voltage_unit || 'V'}</span></div>`;
+                }
+                if (data.battery_data.charge_percent) {
+                    html += `<div class="metric-row"><span class="metric-label">Carga:</span><span class="metric-value">${data.battery_data.charge_percent} %</span></div>`;
+                }
+                if (data.battery_data.temperature) {
+                    html += `<div class="metric-row"><span class="metric-label">Temperatura:</span><span class="metric-value">${data.battery_data.temperature} ${data.battery_data.temperature_unit || '°C'}</span></div>`;
+                }
+                if (data.battery_data.runtime_remaining) {
+                    html += `<div class="metric-row"><span class="metric-label">Autonomía:</span><span class="metric-value">${data.battery_data.runtime_remaining} ${data.battery_data.runtime_unit || 'min'}</span></div>`;
+                }
+                html += '</div>';
+            }
+
+            // Estado
+            if (data.status_data && Object.keys(data.status_data).length > 0) {
+                html += '<div class="result-box success-box mb-3">';
+                html += '<h6 class="text-info mb-3"><i class="bi bi-gear-fill me-2"></i>Estado del Sistema</h6>';
+                if (data.status_data.power_source) {
+                    html += `<div class="metric-row"><span class="metric-label">Fuente de Alimentación:</span><span class="metric-value">${data.status_data.power_source}</span></div>`;
+                }
+                if (data.status_data.battery_status) {
+                    html += `<div class="metric-row"><span class="metric-label">Estado de Batería:</span><span class="metric-value">${data.status_data.battery_status}</span></div>`;
+                }
+                html += '</div>';
+            }
+
+            // Datos Eléctricos
+            if (data.electrical_data && Object.keys(data.electrical_data).length > 0) {
+                html += '<div class="result-box success-box mb-3">';
+                html += '<h6 class="text-primary mb-3"><i class="bi bi-lightning me-2"></i>Datos Eléctricos</h6>';
+                if (data.electrical_data.input_voltage) {
+                    html += `<div class="metric-row"><span class="metric-label">Voltaje Entrada:</span><span class="metric-value">${data.electrical_data.input_voltage} V</span></div>`;
+                }
+                if (data.electrical_data.output_voltage) {
+                    html += `<div class="metric-row"><span class="metric-label">Voltaje Salida:</span><span class="metric-value">${data.electrical_data.output_voltage} V</span></div>`;
+                }
+                if (data.electrical_data.active_power) {
+                    html += `<div class="metric-row"><span class="metric-label">Potencia Activa:</span><span class="metric-value">${data.electrical_data.active_power} ${data.electrical_data.power_unit || 'kW'}</span></div>`;
+                }
+                html += '</div>';
+            }
+
+            resultsContainer.innerHTML = html;
+        }
+
+        function displayError(errorMsg) {
+            resultsContainer.innerHTML = `
+                <div class="result-box error-box">
+                    <h6 class="text-danger mb-2"><i class="bi bi-x-circle me-2"></i>Error de Conexión</h6>
+                    <p class="mb-0">${errorMsg}</p>
+                    <hr style="border-color: rgba(255,255,255,0.1); margin: 1rem 0;">
+                    <small class="text-muted">
+                        <strong>Posibles causas:</strong><br>
+                        • IP incorrecta o dispositivo apagado<br>
+                        • Puerto SNMP incorrecto (prueba 161 o 8161)<br>
+                        • Firewall bloqueando puerto UDP 161<br>
+                        • Community string incorrecto (prueba 'public')<br>
+                        • ZeroTier no conectado o ruta no establecida
+                    </small>
+                </div>
+            `;
+        }
+
+        // Query OID Personalizado
+        oidForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const oid = document.getElementById('customOid').value.trim();
+            const oidResult = document.getElementById('oidResult');
+            const oidContent = document.getElementById('oidContent');
+
+            if (!lastConfig.ip) {
+                showToast('Primero ejecuta una prueba de conexión para configurar IP, puerto y community', 'warning');
+                return;
+            }
+
+            if (!oid) {
+                showToast('Ingresa un OID válido', 'warning');
+                return;
+            }
+
+            oidContent.innerHTML = '<div class="spinner-border spinner-border-sm text-info" role="status"></div> Consultando...';
+            oidResult.style.display = 'block';
+
+            try {
+                const response = await fetch('/api/snmp/query-oid', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ...lastConfig, oid })
+                });
+
+                const data = await response.json();
+
+                if (data.status === 'success') {
+                    oidContent.innerHTML = `
+                        <div class="text-success mb-2"><i class="bi bi-check-circle me-2"></i>Éxito</div>
+                        <div class="metric-row"><span class="metric-label">OID:</span><span class="metric-value">${data.oid}</span></div>
+                        <div class="metric-row"><span class="metric-label">Valor:</span><span class="metric-value">${data.value}</span></div>
+                    `;
+                } else {
+                    oidContent.innerHTML = `<div class="text-danger"><i class="bi bi-x-circle me-2"></i>${data.error}</div>`;
+                }
+
+            } catch (error) {
+                oidContent.innerHTML = `<div class="text-danger"><i class="bi bi-x-circle me-2"></i>Error: ${error.message}</div>`;
+            }
+        });
+    </script>
+{% endblock %}

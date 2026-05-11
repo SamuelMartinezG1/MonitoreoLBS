@@ -1,0 +1,23 @@
+# --- Core Flask + Socket.IO ---
+Flask==3.1.2
+Flask-SocketIO==5.3.6
+python-socketio==5.16.0
+python-engineio==4.13.0
+eventlet>=0.40.3
+gunicorn>=21.2.0
+
+# --- PostgreSQL (única base de datos del servicio) ---
+psycopg[binary]>=3.1.0
+psycopg-pool>=3.1.0
+
+# --- Protocolos de monitoreo ---
+pysnmp==7.1.22
+pyasn1==0.6.2
+pysmi-lextudio==1.4.3
+pymodbus==3.6.8
+
+# --- Utilidades ---
+python-dotenv>=1.0.0
+APScheduler==3.10.4
+requests==2.32.5
+zeroconf>=0.132.0
