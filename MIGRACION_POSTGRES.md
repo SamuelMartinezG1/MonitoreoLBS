@@ -95,7 +95,7 @@ Adicional:
 ## 3. Cómo regenerar el ambiente desde cero
 
 ```bash
-cd ups-monitoring-extracted
+cd MonitoreoLBS
 cp .env.example .env
 
 # Postgres con migraciones automáticas

@@ -1,4 +1,4 @@
-# UPS Monitoring Service
+# MonitoreoLBS — Servicio de Monitoreo UPS
 
 Servicio independiente para **monitoreo de equipos UPS** vía SNMP y Modbus TCP.
 Extraído del proyecto `LBS-SERVICIO-APP` para poder desplegarse de forma
@@ -57,7 +57,7 @@ autónoma con Docker Compose y exponerse al exterior con Cloudflare Tunnel.
 ## Estructura del repo
 
 ```
-ups-monitoring-extracted/
+MonitoreoLBS/
 ├── app/
 │   ├── extensions.py             # Socket.IO global
 │   ├── base_datos.py             # GestorDB (Postgres pool)

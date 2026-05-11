@@ -1,4 +1,4 @@
-# docker-compose.yml — UPS Monitoring Service
+# docker-compose.yml — MonitoreoLBS (Servicio de Monitoreo UPS)
 # Stack 100% PostgreSQL (sin InfluxDB).
 #
 # Servicios:
