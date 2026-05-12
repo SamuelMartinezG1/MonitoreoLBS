@@ -15,12 +15,8 @@ from datetime import datetime
 diagnostic_bp = Blueprint('diagnostic', __name__)
 
 
-@diagnostic_bp.route('/diagnostico')
-@login_required
-@permiso_requerido('herramientas')
-def index():
-    """Página principal de diagnóstico"""
-    return render_template('diagnostico.html')
+# NOTE: la vista de /diagnostico ahora la sirve `lbs_bp` con el nuevo diseño.
+# Los endpoints /api/diagnostic/* continúan funcionando como JSON.
 
 
 @diagnostic_bp.route('/api/diagnostic/ping', methods=['POST'])

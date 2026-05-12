@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 test_snmp_bp = Blueprint('test_snmp', __name__)
 
 
-@test_snmp_bp.route('/snmp-test')
+@test_snmp_bp.route('/legacy/snmp-test')
 @login_required
 def snmp_test_page():
     """Renderiza la página de prueba SNMP."""

@@ -6,6 +6,10 @@ python-engineio==4.13.0
 eventlet>=0.40.3
 gunicorn>=21.2.0
 
+# --- Auth ---
+Flask-Login>=0.6.3
+bcrypt>=4.0.1
+
 # --- PostgreSQL (única base de datos del servicio) ---
 psycopg[binary]>=3.1.0
 psycopg-pool>=3.1.0

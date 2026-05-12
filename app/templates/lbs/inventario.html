@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  {% include 'lbs/_head.html' %}
+  <title>Inventario · LBS Monitor</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/tokens.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/shell.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/panels.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/layout.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/pages.css') }}" />
+  {% include 'lbs/_react.html' %}
+</head>
+<body>
+  <div id="root"></div>
+  <script>window.LBS_URLS = {{ urls|tojson }};</script>
+  <script type="text/babel" src="{{ url_for('static', filename='lbs/components/Shell.jsx') }}"></script>
+  <script type="text/babel" src="{{ url_for('static', filename='lbs/components/Sidebar.jsx') }}"></script>
+  <script type="text/babel" src="{{ url_for('static', filename='lbs/components/MockData.jsx') }}"></script>
+  <script type="text/babel" src="{{ url_for('static', filename='lbs/components/tweaks-panel.jsx') }}"></script>
+  <script type="text/babel" src="{{ url_for('static', filename='lbs/components/InventarioApp.jsx') }}"></script>
+</body>
+</html>

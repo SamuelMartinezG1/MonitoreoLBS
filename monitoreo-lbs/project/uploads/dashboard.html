@@ -1,0 +1,389 @@
+{% extends "base.html" %}
+
+{% block title %}Tablero{% endblock %}
+
+{% block content %}
+    <div class="container-main">
+        <!-- Buscador de Pedido -->
+        <div class="glass-card mb-4">
+            <div class="section-title">
+                <i class="bi bi-search"></i>
+                Buscar Pedido
+            </div>
+            <form method="POST" action="{{ url_for('dashboard.dashboard') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="accion" value="buscar_pedido">
+                <div class="row g-3 align-items-end">
+                    <div class="col-md-8">
+                        <label class="form-label">Numero de Pedido / OC</label>
+                        <input type="text" class="form-control form-control-lg" name="pedido_buscar"
+                            placeholder="Ingrese numero de pedido..." value="{{ pedido_buscado }}" required>
+                    </div>
+                    <div class="col-md-4">
+                        <button type="submit" class="btn btn-primary btn-lg w-100">
+                            <i class="bi bi-search me-2"></i>Buscar
+                        </button>
+                    </div>
+                </div>
+            </form>
+
+            <div class="mt-3 text-center">
+                <span class="text-muted" style="font-size: 0.85rem;">No existe el pedido?</span>
+                <button class="btn btn-sm btn-outline-danger ms-2" data-bs-toggle="modal"
+                    data-bs-target="#modalNuevoProyecto">
+                    <i class="bi bi-plus-circle me-1"></i>Crear Nuevo Pedido
+                </button>
+            </div>
+        </div>
+
+        {% if pedido %}
+        <!-- Estado del Pedido -->
+        <div class="glass-card">
+            <div class="section-title mb-4">
+                <i class="bi bi-info-circle-fill"></i>
+                Estado del Pedido: {{ pedido.pedido }}
+            </div>
+
+            <!-- Informacion del Proyecto - Cards Mejoradas -->
+            <div class="row g-3 mb-4">
+                <div class="col-md-4">
+                    <div class="info-display">
+                        <div class="info-label"><i class="bi bi-building me-2"></i>Cliente</div>
+                        <div class="info-value">{{ pedido.cliente_nombre or pedido.cliente_snap or 'N/A' }}</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="info-display">
+                        <div class="info-label"><i class="bi bi-geo-alt me-2"></i>Sucursal</div>
+                        <div class="info-value">{{ pedido.sucursal_nombre or pedido.sucursal_snap or 'N/A' }}</div>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="info-display">
+                        <div class="info-label"><i class="bi bi-file-earmark-text me-2"></i>Numero de Pedido</div>
+                        <div class="info-value">{{ pedido.pedido }}</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Informacion Tecnica del Proyecto (si existe) -->
+            {% if estado.tiene_ups or estado.tiene_calculos %}
+            <div class="row g-3 mb-4">
+                {% if pedido.modelo_snap %}
+                <div class="col-md-4">
+                    <div class="info-display" style="border-left-color: #34c759;">
+                        <div class="info-label"><i class="bi bi-lightning-charge-fill me-2"></i>Modelo UPS</div>
+                        <div class="info-value">{{ pedido.modelo_snap }}</div>
+                        {% if pedido.potencia_snap %}
+                        <small style="color: var(--text-sec); font-size: 0.8rem;">{{ pedido.potencia_snap }} kVA</small>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+                {% if pedido.calibre_fases %}
+                <div class="col-md-4">
+                    <div class="info-display" style="border-left-color: #0a84ff;">
+                        <div class="info-label"><i class="bi bi-diagram-3 me-2"></i>Calibre Fases</div>
+                        <div class="info-value">{{ pedido.calibre_fases }}</div>
+                    </div>
+                </div>
+                {% endif %}
+                {% if pedido.calibre_tierra %}
+                <div class="col-md-4">
+                    <div class="info-display" style="border-left-color: #ff9f0a;">
+                        <div class="info-label"><i class="bi bi-plug me-2"></i>Calibre Tierra</div>
+                        <div class="info-value">{{ pedido.calibre_tierra }}</div>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+
+            <!-- Indicadores de Estado -->
+            <div class="row g-3 mb-4">
+                <!-- UPS Asignado -->
+                <div class="col-md-4">
+                    <div class="stat-card"
+                        style="{% if estado.tiene_ups %}background: linear-gradient(135deg, rgba(52, 199, 89, 0.15) 0%, rgba(52, 199, 89, 0.05) 100%); border-color: rgba(52, 199, 89, 0.3);{% endif %}">
+                        <div class="stat-icon" style="{% if estado.tiene_ups %}background: #34c759;{% endif %}">
+                            <i class="bi bi-lightning-charge-fill"></i>
+                        </div>
+                        <div class="stat-content">
+                            <h3 style="font-size: 1.5rem;">{% if estado.tiene_ups %}<i
+                                    class="bi bi-check-circle-fill text-success"></i>{% else %}<i
+                                    class="bi bi-x-circle-fill text-danger"></i>{% endif %}</h3>
+                            <p style="margin-bottom: 5px;">UPS Asignado</p>
+                            {% if estado.tiene_ups %}
+                            <small style="color: var(--text-sec); font-size: 0.75rem;">{{ estado.modelo_ups }}</small>
+                            {% else %}
+                            <small style="color: var(--text-sec); font-size: 0.75rem;">Sin equipo</small>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Calculos Publicados -->
+                <div class="col-md-4">
+                    <div class="stat-card"
+                        style="{% if estado.tiene_calculos %}background: linear-gradient(135deg, rgba(52, 199, 89, 0.15) 0%, rgba(52, 199, 89, 0.05) 100%); border-color: rgba(52, 199, 89, 0.3);{% endif %}">
+                        <div class="stat-icon" style="{% if estado.tiene_calculos %}background: #34c759;{% endif %}">
+                            <i class="bi bi-calculator-fill"></i>
+                        </div>
+                        <div class="stat-content">
+                            <h3 style="font-size: 1.5rem;">{% if estado.tiene_calculos %}<i
+                                    class="bi bi-check-circle-fill text-success"></i>{% else %}<i
+                                    class="bi bi-x-circle-fill text-danger"></i>{% endif %}</h3>
+                            <p style="margin-bottom: 5px;">Calculos Publicados</p>
+                            {% if estado.tiene_calculos %}
+                            <small style="color: var(--text-sec); font-size: 0.75rem;">{{ pedido.fecha_publicacion or
+                                'Fecha N/A' }}</small>
+                            {% else %}
+                            <small style="color: var(--text-sec); font-size: 0.75rem;">No generados</small>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Checklist -->
+                <div class="col-md-4">
+                    <div class="stat-card"
+                        style="{% if pedido.pdf_checklist_url %}background: linear-gradient(135deg, rgba(52, 199, 89, 0.15) 0%, rgba(52, 199, 89, 0.05) 100%); border-color: rgba(52, 199, 89, 0.3);{% endif %}">
+                        <div class="stat-icon" style="{% if pedido.pdf_checklist_url %}background: #34c759;{% endif %}">
+                            <i class="bi bi-clipboard-check-fill"></i>
+                        </div>
+                        <div class="stat-content">
+                            <h3 style="font-size: 1.5rem;">{% if pedido.pdf_checklist_url %}<i
+                                    class="bi bi-check-circle-fill text-success"></i>{% else %}<i
+                                    class="bi bi-x-circle-fill text-danger"></i>{% endif %}</h3>
+                            <p style="margin-bottom: 5px;">Checklist Generado</p>
+                            <small style="color: var(--text-sec); font-size: 0.75rem;">{% if pedido.pdf_checklist_url
+                                %}Disponible{% else %}No generado{% endif %}</small>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- Acciones Directas -->
+            <div class="section-title mb-3">
+                <i class="bi bi-lightning-fill"></i>
+                Acciones para este Pedido
+            </div>
+            <div class="row g-3">
+                <!-- Accion principal: Generar/Modificar Guia -->
+                <div class="col-12">
+                    <a href="{{ url_for('calculator.calculadora') }}?pedido={{ pedido.pedido }}"
+                        class="btn btn-lg w-100"
+                        style="background: linear-gradient(135deg, rgba(0, 102, 255, 0.2) 0%, rgba(0, 102, 255, 0.1) 100%);
+                              border: 2px solid var(--accent-primary); color: var(--text-main); font-weight: 600; padding: 1.5rem;">
+                        <i class="bi bi-{% if estado.tiene_calculos %}arrow-repeat{% else %}play-circle{% endif %} me-2"
+                            style="font-size: 1.5rem;"></i>
+                        <div>
+                            <div style="font-size: 1.1rem;">{% if estado.tiene_calculos %}Reimprimir / Modificar Guia{%
+                                else %}Generar Guia{% endif %} de Instalacion</div>
+                            <small style="font-size: 0.75rem; opacity: 0.7;">Ir a Calculadora</small>
+                        </div>
+                    </a>
+                </div>
+
+                <!-- Documentos Generados -->
+                {% if pedido.pdf_guia_url or pedido.pdf_checklist_url %}
+                <div class="col-12">
+                    <div class="section-title mb-2" style="font-size: 1rem;">
+                        <i class="bi bi-file-earmark-pdf"></i>
+                        Documentos Disponibles
+                    </div>
+                </div>
+                {% endif %}
+
+                <!-- Reimprimir Guia -->
+                {% if pedido.pdf_guia_url %}
+                <div class="col-md-6">
+                    <a href="{{ url_for('documents.reimprimir_guia', pedido=pedido.pedido) }}"
+                        class="btn btn-outline-success w-100" style="padding: 1rem; border-width: 2px;">
+                        <i class="bi bi-file-earmark-text me-2"></i>
+                        <div>
+                            <div style="font-weight: 600;">Reimprimir Guia</div>
+                            <small style="font-size: 0.7rem; opacity: 0.8;">Descargar PDF guardado</small>
+                        </div>
+                    </a>
+                </div>
+                {% endif %}
+
+                <!-- Reimprimir Checklist -->
+                {% if pedido.pdf_checklist_url %}
+                <div class="col-md-6">
+                    <a href="{{ url_for('documents.reimprimir_checklist', pedido=pedido.pedido) }}"
+                        class="btn btn-outline-success w-100" style="padding: 1rem; border-width: 2px;">
+                        <i class="bi bi-clipboard-check me-2"></i>
+                        <div>
+                            <div style="font-weight: 600;">Reimprimir Checklist</div>
+                            <small style="font-size: 0.7rem; opacity: 0.8;">Descargar PDF guardado</small>
+                        </div>
+                    </a>
+                </div>
+                {% endif %}
+
+                <!-- Generar Checklist -->
+                <div class="col-12">
+                    <a href="{{ url_for('documents.generar_checklist', pedido=pedido.pedido) }}"
+                        class="btn btn-lg w-100" style="background: linear-gradient(135deg, rgba(10, 132, 255, 0.2) 0%, rgba(10, 132, 255, 0.1) 100%);
+                              border: 2px solid #0a84ff; color: var(--text-main); font-weight: 600; padding: 1.5rem;">
+                        <i class="bi bi-clipboard-{% if pedido.pdf_checklist_url %}check{% else %}plus{% endif %} me-2"
+                            style="font-size: 1.5rem;"></i>
+                        <div>
+                            <div style="font-size: 1.1rem;">{% if pedido.pdf_checklist_url %}Regenerar{% else
+                                %}Generar{% endif %} Checklist de Instalacion</div>
+                            <small style="font-size: 0.75rem; opacity: 0.7;">Llenar datos del cliente e imprimir</small>
+                        </div>
+                    </a>
+                </div>
+            </div>
+        </div>
+        {% elif pedido_buscado %}
+        <!-- Pedido no encontrado -->
+        <div class="glass-card text-center">
+            <div style="padding: 3rem;">
+                <i class="bi bi-exclamation-triangle" style="font-size: 4rem; color: rgba(255, 159, 10, 0.5);"></i>
+                <h4 class="mt-3" style="color: var(--text-main);">Pedido no encontrado</h4>
+                <p style="color: var(--text-sec); margin-bottom: 2rem;">
+                    No se encontro ningun pedido con el numero <strong>"{{ pedido_buscado }}"</strong>
+                </p>
+                <button class="btn btn-primary btn-lg" data-bs-toggle="modal" data-bs-target="#modalNuevoProyecto">
+                    <i class="bi bi-plus-circle me-2"></i>Crear Pedido "{{ pedido_buscado }}"
+                </button>
+            </div>
+        </div>
+        {% else %}
+        <!-- Estado inicial -->
+        <div class="glass-card text-center">
+            <div style="padding: 3rem;">
+                <i class="bi bi-search" style="font-size: 4rem; color: rgba(255, 255, 255, 0.1);"></i>
+                <h4 class="mt-3" style="color: var(--text-main);">Busca un Pedido para Comenzar</h4>
+                <p style="color: var(--text-sec);">
+                    Ingresa el numero de pedido arriba para ver su estado y acceder a las funciones
+                </p>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Modal: Nuevo Proyecto -->
+    <div class="modal fade" id="modalNuevoProyecto" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content"
+                style="background: rgba(30, 30, 30, 0.95); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); color: #fff;">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title text-danger fw-bold">
+                        <i class="bi bi-plus-circle me-2"></i>Registrar Nuevo Proyecto
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <form method="POST" action="{{ url_for('dashboard.dashboard') }}">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="accion" value="crear_proyecto">
+                    <div class="modal-body">
+                        <div class="row g-3">
+                            <div class="col-md-12">
+                                <label class="form-label">Numero de Pedido / OC</label>
+                                <input type="text" class="form-control" name="pedido" id="input_pedido_modal"
+                                    placeholder="Ej: OC-2024-001"
+                                    value="{{ pedido_buscado if pedido_buscado and not pedido else '' }}" required>
+                            </div>
+                            <!-- NUEVOS CAMPOS: Requerimientos del Cliente -->
+                            <div class="col-md-4">
+                                <label class="form-label">Potencia (kVA)</label>
+                                <input type="number" step="0.1" class="form-control" name="potencia_kva"
+                                    placeholder="kVA">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">Voltaje Entrada</label>
+                                <select class="form-select" name="voltaje_entrada">
+                                    <option value="" selected>-- Sel --</option>
+                                    <option value="120">120V</option>
+                                    <option value="127">127V</option>
+                                    <option value="208">208V</option>
+                                    <option value="220">220V</option>
+                                    <option value="440">440V</option>
+                                    <option value="480">480V</option>
+                                </select>
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label">Voltaje Salida</label>
+                                <select class="form-select" name="voltaje_salida">
+                                    <option value="" selected>-- Sel --</option>
+                                    <option value="120">120V</option>
+                                    <option value="127">127V</option>
+                                    <option value="208">208V</option>
+                                    <option value="220">220V</option>
+                                    <option value="440">440V</option>
+                                    <option value="480">480V</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Cliente</label>
+                                <select class="form-select" name="cliente_nombre" id="sel_cliente_modal" required>
+                                    <option value="">-- Seleccione cliente --</option>
+                                    {% for cliente in clientes %}
+                                    <option value="{{ cliente }}">{{ cliente }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label">Sucursal</label>
+                                <select class="form-select" name="sucursal_nombre" id="sel_sucursal_modal">
+                                    <option value="">-- Seleccione sucursal --</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-footer border-secondary">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-save me-2"></i>Crear Proyecto
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        // Cargar sucursales al seleccionar cliente
+        document.getElementById('sel_cliente_modal').addEventListener('change', function () {
+            const cliente = this.value;
+            const sucursalSelect = document.getElementById('sel_sucursal_modal');
+
+            if (cliente) {
+                fetch(`/api/sucursales/${encodeURIComponent(cliente)}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        sucursalSelect.innerHTML = '<option value="">-- Seleccione sucursal --</option>';
+                        data.forEach(item => {
+                            const option = document.createElement('option');
+                            option.value = item.sucursal;
+                            option.textContent = item.sucursal;
+                            sucursalSelect.appendChild(option);
+                        });
+                    })
+                    .catch(error => console.error('Error:', error));
+            } else {
+                sucursalSelect.innerHTML = '<option value="">-- Seleccione sucursal --</option>';
+            }
+        });
+
+        // Busqueda rapida con Enter
+        const pedidoInput = document.querySelector('input[name="pedido_buscar"]');
+        if (pedidoInput) {
+            pedidoInput.addEventListener('keypress', function (e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const btnBuscar = document.querySelector('button[type="submit"]');
+                    if (btnBuscar) btnBuscar.click();
+                }
+            });
+        }
+    </script>
+{% endblock %}

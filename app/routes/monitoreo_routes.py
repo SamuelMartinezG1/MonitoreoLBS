@@ -11,11 +11,7 @@ logger = logging.getLogger(__name__)
 monitoreo_bp = Blueprint('monitoreo', __name__)
 
 
-@monitoreo_bp.route('/monitoreo')
-@login_required
-@permiso_requerido('scada')
-def index():
-    return render_template('monitoreo.html')
+# NOTE: la vista de /monitoreo ahora la sirve `lbs_bp` con el nuevo diseño.
 
 
 # Redirect /analytics → /monitoreo

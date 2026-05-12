@@ -8,11 +8,8 @@ import platform
 inventario_bp = Blueprint('inventario', __name__)
 
 
-@inventario_bp.route('/inventario')
-@login_required
-@permiso_requerido('scada')
-def index():
-    return render_template('inventario.html')
+# NOTE: la vista de /inventario ahora la sirve `lbs_bp` con el nuevo diseño.
+# Los endpoints /api/inventario/* continúan funcionando como JSON.
 
 
 @inventario_bp.route('/api/inventario/sitios', methods=['GET'])
