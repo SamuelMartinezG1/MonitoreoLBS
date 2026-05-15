@@ -495,79 +495,64 @@ def snmp_autodetect():
 @diagnostic_bp.route('/api/diagnostic/snmp-walk', methods=['POST'])
 @login_required
 @permiso_requerido('herramientas')
-async def snmp_walk():
-    """
-    Realiza un SNMP Walk (secuencia de GetNext) para listar OIDs disponibles.
-    Limitado a 50 resultados por seguridad.
-    """
+def snmp_walk():
+    """SNMP Walk (GetNext) hasta 50 OIDs. Async interno, wrapped sync."""
     data = request.json
     ip = data.get('ip')
     port = int(data.get('port', 161))
     community = data.get('community', 'public')
-    version = int(data.get('version', 0)) # Default v1 (0) o v2c (1)
-    # Default: .1.3.6.1.4.1 (enterprises) para buscar cosas custom
-    # O .1.3.6.1.2.1 (MIB-2) para estandar
-    root_oid_str = data.get('oid', '1.3.6.1.2.1') 
+    version = int(data.get('version', 0))
+    root_oid_str = data.get('oid', '1.3.6.1.2.1')
+
+    if not ip:
+        return jsonify({'success': False, 'error': 'IP requerida'}), 400
 
     try:
-        # Importar aqui para evitar ciclos y solo cargar si se usa
-        from pysnmp.hlapi.v3arch.asyncio import next_cmd, SnmpEngine, CommunityData, UdpTransportTarget, ContextData, ObjectType, ObjectIdentity
-        
-        results = []
-        limit = 50 # Limite estricto para no saturar
-        
-        # Objeto raiz
-        engine = SnmpEngine()
-        auth = CommunityData(community, mpModel=version)
-        transport = await UdpTransportTarget.create((ip, port), timeout=2.0, retries=0)
-        context = ContextData()
-        
-        # Iniciar desde el OID raiz solicitado
-        # NOTA: next_cmd espera un objeto ObjectType(ObjectIdentity(oid))
-        current_oid = ObjectType(ObjectIdentity(root_oid_str))
-        
-        # Bucle GetNext manual para simular Walk
-        for _ in range(limit):
-            errorIndication, errorStatus, errorIndex, varBinds = await next_cmd(
-                engine, auth, transport, context, current_oid
-            )
-            
-            if errorIndication:
-                return jsonify({'success': False, 'error': f"Error de conexión: {errorIndication}"})
-            
-            if errorStatus:
-                # Fin de MIB o error
-                if str(errorStatus) == 'noSuchName':
-                    break # Fin
-                return jsonify({'success': False, 'error': f"Error SNMP: {errorStatus.prettyPrint()}"})
-                
-            if not varBinds:
-                break
-            
-            # Procesar resultado (usualmente un solo varBind)
-            varBind = varBinds[0]
-            oid_obj = varBind[0]
-            val_obj = varBind[1]
-            
-            oid_str = str(oid_obj)
-            val_str = val_obj.prettyPrint()
-            
-            # Guardar
-            results.append({
-                'oid': oid_str,
-                'value': val_str
-            })
-            
-            # Preparar siguiente iteración usando el OID obtenido
-            current_oid = ObjectType(ObjectIdentity(oid_str))
-            
-        return jsonify({
-            'success': True,
-            'results': results,
-            'count': len(results),
-            'limit_reache': len(results) >= limit
-        })
+        from pysnmp.hlapi.v3arch.asyncio import (
+            next_cmd, SnmpEngine, CommunityData, UdpTransportTarget,
+            ContextData, ObjectType, ObjectIdentity,
+        )
 
+        async def _walk():
+            results = []
+            limit = 50
+            engine = SnmpEngine()
+            auth = CommunityData(community, mpModel=version)
+            transport = await UdpTransportTarget.create((ip, port), timeout=2.0, retries=0)
+            context = ContextData()
+            current_oid = ObjectType(ObjectIdentity(root_oid_str))
+
+            for _ in range(limit):
+                errInd, errStat, _, varBinds = await next_cmd(
+                    engine, auth, transport, context, current_oid
+                )
+                if errInd:
+                    return {'success': False, 'error': f"Error de conexion: {errInd}"}
+                if errStat:
+                    if str(errStat) == 'noSuchName':
+                        break
+                    return {'success': False, 'error': f"Error SNMP: {errStat.prettyPrint()}"}
+                if not varBinds:
+                    break
+                vb = varBinds[0]
+                oid_str = str(vb[0])
+                if not oid_str.startswith(root_oid_str.rstrip('.')):
+                    break
+                results.append({'oid': oid_str, 'value': vb[1].prettyPrint()})
+                current_oid = ObjectType(ObjectIdentity(oid_str))
+
+            return {
+                'success': True,
+                'results': results,
+                'count': len(results),
+                'limit_reached': len(results) >= limit,
+            }
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        out = loop.run_until_complete(_walk())
+        loop.close()
+        return jsonify(out)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
@@ -575,8 +560,8 @@ async def snmp_walk():
 @diagnostic_bp.route('/api/diagnostic/snmp-get', methods=['POST'])
 @login_required
 @permiso_requerido('herramientas')
-async def snmp_get():
-    """GET de un OID específico via pysnmp."""
+def snmp_get():
+    """GET de un OID. Async interno, wrapped sync (Flask no awaita coroutines)."""
     data = request.json
     ip = data.get('ip')
     port = int(data.get('port', 161))
@@ -590,34 +575,34 @@ async def snmp_get():
     try:
         from pysnmp.hlapi.v3arch.asyncio import (
             get_cmd, SnmpEngine, CommunityData, UdpTransportTarget,
-            ContextData, ObjectType, ObjectIdentity
+            ContextData, ObjectType, ObjectIdentity,
         )
 
-        engine = SnmpEngine()
-        auth = CommunityData(community, mpModel=version)
-        transport = await UdpTransportTarget.create((ip, port), timeout=3.0, retries=1)
-        context = ContextData()
+        async def _get():
+            engine = SnmpEngine()
+            auth = CommunityData(community, mpModel=version)
+            transport = await UdpTransportTarget.create((ip, port), timeout=3.0, retries=1)
+            context = ContextData()
+            errInd, errStat, _, varBinds = await get_cmd(
+                engine, auth, transport, context,
+                ObjectType(ObjectIdentity(oid_str)),
+            )
+            if errInd:
+                return {'success': False, 'error': str(errInd)}
+            if errStat:
+                return {'success': False, 'error': str(errStat.prettyPrint())}
+            results = [{
+                'oid':   str(vb[0]),
+                'value': vb[1].prettyPrint(),
+                'type':  vb[1].__class__.__name__,
+            } for vb in varBinds]
+            return {'success': True, 'results': results}
 
-        errorIndication, errorStatus, errorIndex, varBinds = await get_cmd(
-            engine, auth, transport, context,
-            ObjectType(ObjectIdentity(oid_str))
-        )
-
-        if errorIndication:
-            return jsonify({'success': False, 'error': str(errorIndication)})
-        if errorStatus:
-            return jsonify({'success': False, 'error': str(errorStatus.prettyPrint())})
-
-        results = []
-        for varBind in varBinds:
-            results.append({
-                'oid': str(varBind[0]),
-                'value': varBind[1].prettyPrint(),
-                'type': varBind[1].__class__.__name__
-            })
-
-        return jsonify({'success': True, 'results': results})
-
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        out = loop.run_until_complete(_get())
+        loop.close()
+        return jsonify(out)
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 

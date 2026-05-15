@@ -7,7 +7,7 @@ import asyncio
 import logging
 from typing import Dict, List, Tuple, Any, Optional, Callable
 from datetime import datetime
-from pysnmp.hlapi.asyncio import (
+from pysnmp.hlapi.v3arch.asyncio import (
     SnmpEngine, CommunityData, UdpTransportTarget, ContextData,
     ObjectType, ObjectIdentity, get_cmd, next_cmd
 )

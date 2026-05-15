@@ -1,300 +1,280 @@
 """
-Servicio de monitoreo unificado para UPS INVT.
-Orquesta SNMP y Modbus segun la configuracion de cada dispositivo.
-"""
+Servicio de monitoreo unificado para UPS.
 
+Orquesta SNMP (asyncio) y Modbus (delegado a `ModbusMonitor` con su propio
+ThreadPoolExecutor). Por ciclo:
+
+  1. Lee `monitoreo_config`.
+  2. Para cada UPS SNMP, dispara `_check_device` concurrentemente con
+     `asyncio.gather` reusando un cliente SNMP cacheado (1 `SnmpEngine`
+     por dispositivo, no por ciclo).
+  3. Acumula filas para `ups_metrics` en un buffer y las flusha **una vez**
+     al final con `pg_metrics.write_ups_data_batch` — un solo executemany
+     para todos los UPS del ciclo (clave para 150 dispositivos).
+  4. Persiste a `ups_telemetry_log` y `ups_chart_history` con throttle por
+     timestamp (no por contador de ciclos), configurable vía
+     `METRICS_SAMPLE_INTERVAL_S` y `HISTORY_SAMPLE_INTERVAL_S`.
+
+El cleanup (telemetría / historial / métricas viejas) lo hace APScheduler
+desde `run_monitor.py`, no este loop.
+"""
 import os
-import threading
 import time
+import math
+import threading
 import asyncio
 import logging
+
 from app.base_datos import GestorDB
-from app.services.protocols.snmp_client import SNMPClient
 from app.services.modbus_monitor import ModbusMonitor
 from app.extensions import socketio
 
 logger = logging.getLogger(__name__)
 
 
+# ============================================================================
+# Cache de clientes SNMP por dispositivo
+# ============================================================================
+def _client_params_hash(ip, port, community, version, ups_type):
+    return (ip, int(port), community, int(version), ups_type)
+
+
+def _build_snmp_client(params_hash):
+    """Instancia el cliente SNMP apropiado según `ups_type`."""
+    ip, port, community, version, ups_type = params_hash
+    if ups_type in ('ups_mib_standard', 'hybrid'):
+        from app.services.protocols.snmp_upsmib_client import UPSMIBClient
+        return UPSMIBClient(
+            ip_address=ip, community=community, port=port,
+            mp_model=version, include_invt=(ups_type == 'hybrid'),
+        )
+    # Default: Megatec / INVT (OIDs enterprise .935)
+    from app.services.protocols.snmp_minimal_client import MinimalSNMPClient
+    return MinimalSNMPClient(community=community, port=port, mp_model=version)
+
+
+# ============================================================================
+# Monitoring service
+# ============================================================================
 class MonitoringService(threading.Thread):
     def __init__(self, interval=2):
-        super().__init__()
-        self.interval = interval
+        super().__init__(daemon=True)
+        self.interval = max(1, int(interval))
         self.running = True
         self.db = GestorDB()
-        self.daemon = True
         self.modbus_monitor = ModbusMonitor()
-        self.ultimo_estado = {}
-        self._cycle_count = 0
-        self._telemetry_interval = 3  # Persistir cada 3 ciclos (~6 seg)
-        self._cleanup_interval = 30   # Limpiar cada 30 ciclos (~60 seg)
-        self._history_interval = 15   # Guardar historial graficas cada 15 ciclos (~30 seg)
-        self._history_cleanup_interval = 1800  # Limpiar historial antiguo cada ~1 hora
-        self._history_retention_days = int(os.environ.get('HISTORY_RETENTION_DAYS', 30))
 
+        # Loop asyncio dedicado de este hilo. Bajo eventlet, varios greenlets
+        # comparten el slot de loop por hilo OS — usar asyncio.run() por ciclo
+        # falla con "cannot be called from a running event loop". Mantener un
+        # loop propio + run_until_complete() lo aísla del resto del proceso.
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+        self.ultimo_estado: dict[str, dict] = {}
+
+        # Cache de clientes SNMP: dev_id -> (client, params_hash, created_ts)
+        self._snmp_cache: dict[int, tuple] = {}
+        self._snmp_ttl = int(os.environ.get('SNMP_CLIENT_TTL_S', 300))
+
+        # Throttling por timestamp (en vez de contador de ciclos)
+        self._metrics_interval = int(os.environ.get('METRICS_SAMPLE_INTERVAL_S', 30))
+        self._history_interval = int(os.environ.get('HISTORY_SAMPLE_INTERVAL_S', 30))
+        self._last_metric_write:  dict[int, float] = {}
+        self._last_history_write: dict[int, float] = {}
+
+    # ------------------------------------------------------------------ #
+    # Ciclo                                                               #
+    # ------------------------------------------------------------------ #
     def run(self):
-        logger.info("Iniciando servicio de monitoreo unificado (SNMP + Modbus)...")
-        # Iniciar monitor Modbus en su propio hilo
+        logger.info(
+            "Iniciando MonitoringService (interval=%ss, metrics=%ss, history=%ss)",
+            self.interval, self._metrics_interval, self._history_interval,
+        )
+        # Loop dedicado del hilo. Lo creamos una sola vez y reusamos por ciclo.
+        self._loop = asyncio.new_event_loop()
         self.modbus_monitor.start_background_task()
 
-        # Este hilo maneja SNMP
-        while self.running:
+        try:
+            while self.running:
+                try:
+                    self._loop.run_until_complete(self._async_poll())
+                except Exception as e:
+                    logger.error("Error en ciclo SNMP: %s", e)
+                time.sleep(self.interval)
+        finally:
             try:
-                self._poll_snmp_devices()
-            except Exception as e:
-                logger.error(f"Error en ciclo de monitoreo SNMP: {e}")
-
-            self._cycle_count += 1
-
-            # Limpiar telemetría antigua cada ~60 seg
-            if self._cycle_count % self._cleanup_interval == 0:
-                try:
-                    self.db.limpiar_telemetria_antigua(10)
-                except Exception:
-                    pass
-
-            # Guardar historial de graficas cada ~30 seg
-            if self._cycle_count % self._history_interval == 0 and self.ultimo_estado:
-                try:
-                    for dev_id_str, estado in self.ultimo_estado.items():
-                        if estado:
-                            raw_data = {
-                                'input_voltage_l1': estado.get('voltaje_in_l1', 0),
-                                'input_voltage_l2': estado.get('voltaje_in_l2', 0),
-                                'input_voltage_l3': estado.get('voltaje_in_l3', 0),
-                                'output_voltage_l1': estado.get('voltaje_out_l1', 0),
-                                'output_voltage_l2': estado.get('voltaje_out_l2', 0),
-                                'output_voltage_l3': estado.get('voltaje_out_l3', 0),
-                                'input_frequency': estado.get('frecuencia_in', 0),
-                                'output_frequency': estado.get('frecuencia_out', 0),
-                                'output_current_l1': estado.get('corriente_out_l1', 0),
-                                'output_current_l2': estado.get('corriente_out_l2', 0),
-                                'output_current_l3': estado.get('corriente_out_l3', 0),
-                                'output_load': estado.get('carga_pct', 0),
-                                'battery_capacity': estado.get('bateria_pct', 0),
-                                'temperature': estado.get('temperatura', 0),
-                            }
-                            self.db.guardar_punto_historial(int(dev_id_str), raw_data)
-                except Exception as e:
-                    logger.error("Error guardando historial de graficas: %s", e)
-
-            # Limpiar historial antiguo cada ~1 hora
-            if self._cycle_count % self._history_cleanup_interval == 0:
-                try:
-                    self.db.limpiar_historial_antiguo(self._history_retention_days)
-                except Exception as e:
-                    logger.error("Error limpiando historial antiguo: %s", e)
-
-            time.sleep(self.interval)
+                self._loop.close()
+            except Exception:
+                pass
 
     def stop(self):
         self.running = False
-        self.modbus_monitor.stop()
-
-    def _poll_snmp_devices(self):
         try:
-            asyncio.run(self._async_poll())
-        except Exception as e:
-            logger.error(f"Error ejecutando poll async SNMP: {e}")
+            self.modbus_monitor.stop()
+        except Exception:
+            pass
 
+    # ------------------------------------------------------------------ #
+    # Loop async                                                          #
+    # ------------------------------------------------------------------ #
     async def _async_poll(self):
         try:
             devices = self.db.obtener_monitoreo_ups()
         except Exception as e:
-            logger.error(f"Error leyendo DB: {e}")
+            logger.error("Error leyendo monitoreo_config: %s", e)
             return
 
-        # Filtrar solo dispositivos SNMP
-        snmp_devices = [d for d in devices if d.get('protocolo', 'modbus') == 'snmp']
+        snmp_devices = [d for d in devices if d.get('protocolo') == 'snmp']
+        if not snmp_devices:
+            return
 
-        tasks = []
-        for dev in snmp_devices:
-            tasks.append(self._check_device(dev))
+        # Buffer de métricas acumuladas en este ciclo
+        metrics_buffer: list[tuple] = []
 
-        if tasks:
-            await asyncio.gather(*tasks)
+        # Lanzar todos los polls concurrentemente
+        await asyncio.gather(
+            *(self._check_device(dev, metrics_buffer) for dev in snmp_devices),
+            return_exceptions=True,
+        )
 
-    async def _check_device(self, dev):
+        # Flush único a ups_metrics
+        if metrics_buffer:
+            try:
+                from app.services.pg_metrics import influx_service
+                influx_service.write_ups_data_batch(metrics_buffer)
+            except Exception as e:
+                logger.debug("Error flushing metrics batch: %s", e)
+
+    # ------------------------------------------------------------------ #
+    # Por dispositivo                                                     #
+    # ------------------------------------------------------------------ #
+    def _get_snmp_client(self, dev_id, params_hash):
+        """Devuelve un cliente SNMP cacheado o lo crea si caducó / cambió."""
+        cached = self._snmp_cache.get(dev_id)
+        now = time.monotonic()
+        if cached:
+            client, h, ts = cached
+            if h == params_hash and (now - ts) < self._snmp_ttl:
+                return client
+        client = _build_snmp_client(params_hash)
+        self._snmp_cache[dev_id] = (client, params_hash, now)
+        return client
+
+    async def _check_device(self, dev, metrics_buffer):
         ip = dev['ip']
-        port = dev.get('snmp_port', 161) or 161
-        community = dev.get('snmp_community', 'public') or 'public'
-        # Manejo robusto de snmp_version (puede ser None, str, o int)
+        port = int(dev.get('snmp_port') or 161)
+        community = dev.get('snmp_community') or 'public'
+
         snmp_version_raw = dev.get('snmp_version')
-        if snmp_version_raw is None or snmp_version_raw == '':
-            snmp_version = 1  # Default SNMPv2c
+        if snmp_version_raw in (None, ''):
+            snmp_version = 1
         else:
             snmp_version = int(snmp_version_raw)
 
-        # Tipo de UPS (nuevo)
-        ups_type = dev.get('ups_type', 'invt_enterprise')
+        ups_type = dev.get('ups_type') or 'invt_enterprise'
         dev_id = dev['id']
 
-        try:
-            # Verificar si hay perfil OID personalizado
-            oid_profile = self.db.obtener_oid_profile(dev_id)
+        data = None
+        status = 'offline'
+        alarms: list = []
+        mapped_data: dict = {}
 
+        try:
+            # 1. Perfil OID custom: bypass de los clientes estándar
+            oid_profile = self.db.obtener_oid_profile(dev_id)
             if oid_profile:
-                # Usar perfil personalizado — hacer GET de cada OID
-                data = await self._poll_custom_profile(ip, port, community, snmp_version, oid_profile)
-                logger.info(f"Usando perfil OID personalizado para {ip} ({len(oid_profile)} variables)")
-            elif ups_type in ('ups_mib_standard', 'hybrid'):
-                # Usar cliente UPS-MIB para monofásicos o híbridos
-                from app.services.protocols.snmp_upsmib_client import UPSMIBClient
-                client = UPSMIBClient(
-                    ip_address=ip,
-                    community=community,
-                    port=port,
-                    mp_model=int(snmp_version),  # Asegurar que sea int
-                    include_invt=(ups_type == 'hybrid')
+                data = await self._poll_custom_profile(
+                    ip, port, community, snmp_version, oid_profile,
                 )
-                logger.info(f"Usando UPSMIBClient para {ip} (tipo: {ups_type})")
-                data = await client.get_ups_data(ip)
             else:
-                # Usar cliente MINIMAL para Megatec/INVT (OIDs enterprise .935)
-                # Cubre ups_type: invt_enterprise, invt_minimal, megatec_snmp
-                from app.services.protocols.snmp_minimal_client import MinimalSNMPClient
-                client = MinimalSNMPClient(community=community, port=port, mp_model=int(snmp_version))
-                logger.info(f"Usando MinimalSNMPClient para {ip} (tipo: {ups_type}, OIDs Megatec .935)")
+                params = _client_params_hash(ip, port, community, snmp_version, ups_type)
+                client = self._get_snmp_client(dev_id, params)
                 data = await client.get_ups_data(ip)
 
             if data:
-                status = 'online'  # Estado online si hay datos
+                status = 'online'
                 data['device_id'] = dev_id
                 data['ip'] = ip
                 data['nombre'] = dev.get('nombre', 'UPS')
                 data['estado'] = 'ONLINE'
 
-                # Agregar info de versión SNMP
                 version_name = 'SNMPv1' if snmp_version == 0 else 'SNMPv2c'
                 data['snmp_version'] = version_name
 
                 socketio.emit('ups_data', data, namespace='/monitor')
-                logger.info(f"✅ {ip} ({version_name}): {data.get('input_voltage_l1', 0)}V entrada, {data.get('battery_capacity', 0)}% batería")
 
-                # Original logic for mapped_data and alarms, adapted to use the 'data' dictionary
-                mapped_data = {
-                    # Voltajes de entrada por fase
-                    'voltaje_in_l1': data.get('input_voltage_l1', 0),
-                    'voltaje_in_l2': data.get('input_voltage_l2', 0),
-                    'voltaje_in_l3': data.get('input_voltage_l3', 0),
-                    'frecuencia_in': data.get('input_frequency', 0),
-                    # Voltajes de salida por fase
-                    'voltaje_out_l1': data.get('output_voltage_l1', 0),
-                    'voltaje_out_l2': data.get('output_voltage_l2', 0),
-                    'voltaje_out_l3': data.get('output_voltage_l3', 0),
-                    'frecuencia_out': data.get('output_frequency', 0),
-                    # Corrientes por fase
-                    'corriente_out_l1': data.get('output_current_l1', data.get('output_current', 0)),
-                    'corriente_out_l2': data.get('output_current_l2', 0),
-                    'corriente_out_l3': data.get('output_current_l3', 0),
-                    # Potencia
-                    'power_factor': data.get('power_factor', 0),
-                    'active_power': data.get('active_power', 0),
-                    'apparent_power': data.get('apparent_power', 0),
-                    # Carga
-                    'carga_pct': data.get('output_load', 0),
-                    # Bateria
-                    'bateria_pct': data.get('battery_capacity', 0),
-                    'voltaje_bateria': data.get('battery_voltage', 0),
-                    'corriente_bateria': data.get('battery_current', 0),
-                    'temperatura': data.get('temperature', 0),
-                    'battery_remain_time': data.get('battery_runtime', 0),
-                    # Estado
-                    'power_mode': data.get('power_source', ''),
-                    'battery_status': data.get('battery_status', ''),
-                    # Metadatos
-                    'phases': data.get('_phases', 1),
-                    'ups_type': ups_type,
-                }
-                # Guardar estado actual para acceso directo (PDFs, API)
+                mapped_data = _map_data_to_frontend(data, ups_type)
                 self.ultimo_estado[str(dev_id)] = mapped_data
-
-                # Generar alarmas SNMP
-                alarms = self._check_snmp_alarms(mapped_data)
+                alarms = _check_snmp_alarms(mapped_data)
             else:
-                status = 'offline'
-                mapped_data = {}
-                alarms = []
-                # Limpiar estado stale para evitar persistir datos viejos
+                # Limpiar estado cacheado para no servir datos viejos al frontend
                 self.ultimo_estado.pop(str(dev_id), None)
 
-                # Registrar status offline en PostgreSQL (ups_metrics) para historial de disponibilidad
-                if self._cycle_count % self._telemetry_interval == 0:
-                    try:
-                        from app.services.pg_metrics import influx_service
-                        influx_service.write_ups_data(
-                            dev.get('nombre', 'UPS'), ip,
-                            {'status_code': 0},
-                            device_id=dev_id,
-                            sitio=dev.get('sitio_nombre', ''),
-                            ups_type=ups_type
-                        )
-                    except Exception:
-                        pass
+        except Exception as e:
+            logger.error("Error checando %s (%s): %s", ip, dev_id, e)
+            self.ultimo_estado.pop(str(dev_id), None)
 
-            payload = {
-                'id': dev_id,
-                'status': status,
-                'ip': ip,
-                'nombre': dev['nombre'],
-                'protocol': 'snmp',
-                'data': mapped_data,
-                'alarms': alarms,
-            }
+        # Emit update siempre (online u offline)
+        socketio.emit('ups_update', {
+            'id':       dev_id,
+            'status':   status,
+            'ip':       ip,
+            'nombre':   dev.get('nombre', 'UPS'),
+            'protocol': 'snmp',
+            'data':     mapped_data,
+            'alarms':   alarms,
+        })
 
-            socketio.emit('ups_update', payload)
-
-            # Persistir telemetría cada N ciclos
-            if status == 'online' and self._cycle_count % self._telemetry_interval == 0:
+        # Persistencia con throttle por timestamp
+        now = time.monotonic()
+        if status == 'online':
+            # Telemetría + ups_metrics (cada METRICS_SAMPLE_INTERVAL_S)
+            last_m = self._last_metric_write.get(dev_id, 0.0)
+            if now - last_m >= self._metrics_interval:
+                self._last_metric_write[dev_id] = now
                 try:
                     self.db.insertar_telemetria(dev_id, data)
-                    # Verificar si hay grabación activa
                     grabacion = self.db.obtener_grabacion_activa(dev_id)
                     if grabacion:
                         self.db.insertar_dato_grabacion(grabacion['id'], data)
-                except Exception as te:
-                    logger.debug(f"Error persistiendo telemetría para {ip}: {te}")
+                except Exception as e:
+                    logger.debug("Persist telemetría %s: %s", ip, e)
 
-                # Escribir también a pg_metrics (Postgres)
+                # Encolar para batch insert a ups_metrics
+                _accumulate_metric_rows(
+                    metrics_buffer, dev_id,
+                    dev.get('nombre', 'UPS'), ip,
+                    dev.get('sitio_nombre', ''), ups_type,
+                    mapped_data,
+                )
+
+            # ups_chart_history (cada HISTORY_SAMPLE_INTERVAL_S)
+            last_h = self._last_history_write.get(dev_id, 0.0)
+            if now - last_h >= self._history_interval:
+                self._last_history_write[dev_id] = now
                 try:
-                    from app.services.pg_metrics import influx_service
-                    influx_data = {
-                        'voltaje_entrada': mapped_data.get('voltaje_in_l1', 0),
-                        'voltaje_entrada_l2': mapped_data.get('voltaje_in_l2', 0),
-                        'voltaje_entrada_l3': mapped_data.get('voltaje_in_l3', 0),
-                        'voltaje_salida': mapped_data.get('voltaje_out_l1', 0),
-                        'voltaje_salida_l2': mapped_data.get('voltaje_out_l2', 0),
-                        'voltaje_salida_l3': mapped_data.get('voltaje_out_l3', 0),
-                        'corriente_salida_l1': mapped_data.get('corriente_out_l1', 0),
-                        'corriente_salida_l2': mapped_data.get('corriente_out_l2', 0),
-                        'corriente_salida_l3': mapped_data.get('corriente_out_l3', 0),
-                        'bateria_porcentaje': mapped_data.get('bateria_pct', 0),
-                        'carga_porcentaje': mapped_data.get('carga_pct', 0),
-                        'temperatura': mapped_data.get('temperatura', 0),
-                        'frecuencia_entrada': mapped_data.get('frecuencia_in', 0),
-                        'frecuencia_salida': mapped_data.get('frecuencia_out', 0),
-                    }
-                    influx_service.write_ups_data(
-                        dev.get('nombre', 'UPS'), ip, influx_data,
-                        device_id=dev_id,
-                        sitio=dev.get('sitio_nombre', ''),
-                        ups_type=ups_type
-                    )
-                    logger.info(f"[MONITOR] Guardando datos device_id={dev_id} en PostgreSQL (ups_metrics)")
-                except Exception as ie:
-                    logger.debug(f"Error pg_metrics para {ip}: {ie}")
+                    self.db.guardar_punto_historial(dev_id, data)
+                except Exception as e:
+                    logger.debug("Persist historial %s: %s", ip, e)
+        else:
+            # Offline: marca status=0 en métricas cada N seg para historial de disponibilidad
+            last_m = self._last_metric_write.get(dev_id, 0.0)
+            if now - last_m >= self._metrics_interval:
+                self._last_metric_write[dev_id] = now
+                metrics_buffer.append((
+                    dev_id, dev.get('nombre', 'UPS'), ip,
+                    dev.get('sitio_nombre', ''), ups_type,
+                    'status_code', 0.0,
+                ))
 
-        except Exception as e:
-            logger.error(f"Error checking SNMP device {ip}: {e}")
-            # Limpiar estado stale en caso de error
-            self.ultimo_estado.pop(str(dev_id), None)
-
+    # ------------------------------------------------------------------ #
+    # Perfil OID custom                                                   #
+    # ------------------------------------------------------------------ #
     async def _poll_custom_profile(self, ip, port, community, snmp_version, oid_profile):
-        """Consulta un dispositivo usando un perfil OID personalizado."""
         try:
             from pysnmp.hlapi.v3arch.asyncio import (
                 get_cmd, SnmpEngine, CommunityData, UdpTransportTarget,
-                ContextData, ObjectType, ObjectIdentity
+                ContextData, ObjectType, ObjectIdentity,
             )
 
             engine = SnmpEngine()
@@ -302,80 +282,158 @@ class MonitoringService(threading.Thread):
             transport = await UdpTransportTarget.create((ip, port), timeout=3.0, retries=1)
             context = ContextData()
 
-            data = {}
+            data: dict = {}
             for mapping in oid_profile:
                 try:
-                    errorIndication, errorStatus, errorIndex, varBinds = await get_cmd(
+                    errInd, errStat, _, varBinds = await get_cmd(
                         engine, auth, transport, context,
-                        ObjectType(ObjectIdentity(mapping['oid']))
+                        ObjectType(ObjectIdentity(mapping['oid'])),
                     )
-
-                    if errorIndication or errorStatus or not varBinds:
+                    if errInd or errStat or not varBinds:
                         continue
-
-                    raw_value = varBinds[0][1].prettyPrint()
+                    raw = varBinds[0][1].prettyPrint()
                     factor = float(mapping.get('factor', 1.0))
-
                     try:
-                        numeric_val = float(raw_value)
-                        data[mapping['variable_name']] = numeric_val * factor
+                        data[mapping['variable_name']] = float(raw) * factor
                     except (ValueError, TypeError):
-                        data[mapping['variable_name']] = raw_value
-
+                        data[mapping['variable_name']] = raw
                 except Exception as e:
-                    logger.debug(f"Error leyendo OID {mapping['oid']}: {e}")
+                    logger.debug("Custom OID %s: %s", mapping.get('oid'), e)
 
-            # Map custom variable names to standard fields for compatibility
-            VARIABLE_TO_STANDARD = {
-                'voltaje_in_l1': 'input_voltage_l1',
-                'voltaje_in_l2': 'input_voltage_l2',
-                'voltaje_in_l3': 'input_voltage_l3',
+            VAR_TO_STD = {
+                'voltaje_in_l1':  'input_voltage_l1',
+                'voltaje_in_l2':  'input_voltage_l2',
+                'voltaje_in_l3':  'input_voltage_l3',
                 'voltaje_out_l1': 'output_voltage_l1',
                 'voltaje_out_l2': 'output_voltage_l2',
                 'voltaje_out_l3': 'output_voltage_l3',
-                'bateria_pct': 'battery_capacity',
-                'temperatura': 'temperature',
-                'carga_pct': 'output_load',
-                'frecuencia_in': 'input_frequency',
+                'bateria_pct':    'battery_capacity',
+                'temperatura':    'temperature',
+                'carga_pct':      'output_load',
+                'frecuencia_in':  'input_frequency',
                 'frecuencia_out': 'output_frequency',
                 'voltaje_bateria': 'battery_voltage',
             }
-
-            standardized = {}
-            for var_name, value in data.items():
-                std_name = VARIABLE_TO_STANDARD.get(var_name)
-                if std_name:
-                    standardized[std_name] = value
-                standardized[var_name] = value
-
-            return standardized if standardized else None
-
+            standardized: dict = {}
+            for name, val in data.items():
+                std = VAR_TO_STD.get(name)
+                if std:
+                    standardized[std] = val
+                standardized[name] = val
+            return standardized or None
         except Exception as e:
-            logger.error(f"Error en poll custom profile para {ip}: {e}")
+            logger.error("Custom profile poll %s: %s", ip, e)
             return None
 
-    def _check_snmp_alarms(self, data):
-        """Genera alarmas basadas en datos SNMP."""
-        alarms = []
 
-        vin = data.get('voltaje_in_l1', 0)
-        if 0 < vin < 180:
-            alarms.append({'level': 'critical', 'code': 'INPUT_V_LOW', 'msg': f'Voltaje entrada bajo: {vin:.1f}V'})
+# ============================================================================
+# Helpers (sin estado)
+# ============================================================================
+def _is_numeric(value) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return math.isfinite(float(value))
+    return False
 
-        bat = data.get('bateria_pct', 0)
-        if 0 < bat < 20:
-            alarms.append({'level': 'critical', 'code': 'BAT_CRITICAL', 'msg': f'Bateria critica: {bat:.1f}%'})
-        elif 0 < bat < 50:
-            alarms.append({'level': 'warning', 'code': 'BAT_LOW', 'msg': f'Bateria baja: {bat:.1f}%'})
 
-        temp = data.get('temperatura', 0)
-        if temp > 45:
-            alarms.append({'level': 'critical', 'code': 'BAT_OVERTEMP', 'msg': f'Sobretemperatura: {temp:.1f}C'})
+# Métricas que enviamos a `ups_metrics` (subconjunto numérico de mapped_data).
+_METRIC_KEYS = (
+    'voltaje_in_l1', 'voltaje_in_l2', 'voltaje_in_l3',
+    'voltaje_out_l1', 'voltaje_out_l2', 'voltaje_out_l3',
+    'frecuencia_in', 'frecuencia_out',
+    'corriente_out_l1', 'corriente_out_l2', 'corriente_out_l3',
+    'carga_pct', 'bateria_pct', 'voltaje_bateria', 'temperatura',
+    'power_factor', 'active_power', 'apparent_power', 'battery_remain_time',
+)
 
-        load = data.get('carga_pct', 0)
-        if load > 90:
-            alarms.append({'level': 'critical', 'code': 'OVERLOAD', 'msg': f'Sobrecarga: {load:.1f}%'})
-        elif load > 70:
-            alarms.append({'level': 'warning', 'code': 'LOAD_HIGH', 'msg': f'Carga alta: {load:.1f}%'})
+# Mapeo a los nombres "antiguos" que esperaba InfluxDB / consumidores.
+_METRIC_RENAME = {
+    'voltaje_in_l1':  'voltaje_entrada',
+    'voltaje_in_l2':  'voltaje_entrada_l2',
+    'voltaje_in_l3':  'voltaje_entrada_l3',
+    'voltaje_out_l1': 'voltaje_salida',
+    'voltaje_out_l2': 'voltaje_salida_l2',
+    'voltaje_out_l3': 'voltaje_salida_l3',
+    'corriente_out_l1': 'corriente_salida_l1',
+    'corriente_out_l2': 'corriente_salida_l2',
+    'corriente_out_l3': 'corriente_salida_l3',
+    'bateria_pct':    'bateria_porcentaje',
+    'carga_pct':      'carga_porcentaje',
+    'frecuencia_in':  'frecuencia_entrada',
+    'frecuencia_out': 'frecuencia_salida',
+}
 
-        return alarms
+
+def _accumulate_metric_rows(buffer, dev_id, name, ip, sitio, ups_type, mapped):
+    """Empuja al buffer las métricas numéricas del dispositivo."""
+    for key in _METRIC_KEYS:
+        val = mapped.get(key)
+        if not _is_numeric(val):
+            continue
+        metric_name = _METRIC_RENAME.get(key, key)
+        buffer.append((dev_id, name, ip, sitio, ups_type, metric_name, float(val)))
+
+
+def _map_data_to_frontend(data, ups_type):
+    """Mapea respuesta SNMP a los nombres que usa el frontend / DB."""
+    return {
+        # Voltajes entrada
+        'voltaje_in_l1': data.get('input_voltage_l1', 0),
+        'voltaje_in_l2': data.get('input_voltage_l2', 0),
+        'voltaje_in_l3': data.get('input_voltage_l3', 0),
+        'frecuencia_in': data.get('input_frequency', 0),
+        # Voltajes salida
+        'voltaje_out_l1': data.get('output_voltage_l1', 0),
+        'voltaje_out_l2': data.get('output_voltage_l2', 0),
+        'voltaje_out_l3': data.get('output_voltage_l3', 0),
+        'frecuencia_out': data.get('output_frequency', 0),
+        # Corrientes salida
+        'corriente_out_l1': data.get('output_current_l1', data.get('output_current', 0)),
+        'corriente_out_l2': data.get('output_current_l2', 0),
+        'corriente_out_l3': data.get('output_current_l3', 0),
+        # Potencia
+        'power_factor':   data.get('power_factor', 0),
+        'active_power':   data.get('active_power', 0),
+        'apparent_power': data.get('apparent_power', 0),
+        # Carga / batería
+        'carga_pct':       data.get('output_load', 0),
+        'bateria_pct':     data.get('battery_capacity', 0),
+        'voltaje_bateria': data.get('battery_voltage', 0),
+        'corriente_bateria': data.get('battery_current', 0),
+        'temperatura':     data.get('temperature', 0),
+        'battery_remain_time': data.get('battery_runtime', 0),
+        # Estado
+        'power_mode':     data.get('power_source', ''),
+        'battery_status': data.get('battery_status', ''),
+        # Meta
+        'phases':   data.get('_phases', 1),
+        'ups_type': ups_type,
+    }
+
+
+def _check_snmp_alarms(data):
+    alarms = []
+    vin = data.get('voltaje_in_l1', 0) or 0
+    if 0 < vin < 180:
+        alarms.append({'level': 'critical', 'code': 'INPUT_V_LOW',
+                       'msg': f'Voltaje entrada bajo: {vin:.1f}V'})
+    bat = data.get('bateria_pct', 0) or 0
+    if 0 < bat < 20:
+        alarms.append({'level': 'critical', 'code': 'BAT_CRITICAL',
+                       'msg': f'Bateria critica: {bat:.1f}%'})
+    elif 0 < bat < 50:
+        alarms.append({'level': 'warning', 'code': 'BAT_LOW',
+                       'msg': f'Bateria baja: {bat:.1f}%'})
+    temp = data.get('temperatura', 0) or 0
+    if temp > 45:
+        alarms.append({'level': 'critical', 'code': 'BAT_OVERTEMP',
+                       'msg': f'Sobretemperatura: {temp:.1f}C'})
+    load = data.get('carga_pct', 0) or 0
+    if load > 90:
+        alarms.append({'level': 'critical', 'code': 'OVERLOAD',
+                       'msg': f'Sobrecarga: {load:.1f}%'})
+    elif load > 70:
+        alarms.append({'level': 'warning', 'code': 'LOAD_HIGH',
+                       'msg': f'Carga alta: {load:.1f}%'})
+    return alarms

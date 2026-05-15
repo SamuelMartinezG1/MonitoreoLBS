@@ -10,16 +10,29 @@ function InventarioApp() {
     document.documentElement.style.setProperty('--accent-glow', accent + '55');
   }, [accent]);
 
+  // Datos en vivo desde DataLayer
+  const [, setTick] = useStateI(0);
+  useEffectI(() => {
+    const onRefresh = () => setTick(x => x + 1);
+    window.addEventListener('lbs:data-refresh', onRefresh);
+    return () => window.removeEventListener('lbs:data-refresh', onRefresh);
+  }, []);
+
   const { SITES, DEVICES } = window.MOCK;
   const [filter, setFilter] = useStateI('all');
   const [search, setSearch] = useStateI('');
+
+  // Modales
+  const [showAddDev,  setShowAddDev]  = useStateI(false);
+  const [showAddSite, setShowAddSite] = useStateI(false);
+  const [oidEditing,  setOidEditing]  = useStateI(null);  // device para editar OID profile
 
   const counts = useMemoI(() => ({
     all: DEVICES.length,
     ok:  DEVICES.filter(d => d.status === 'ok').length,
     warn:DEVICES.filter(d => d.status === 'warn').length,
     off: DEVICES.filter(d => d.status === 'off').length,
-  }), []);
+  }), [DEVICES]);
 
   const filtered = useMemoI(() => {
     return DEVICES.filter(d => {
@@ -28,11 +41,11 @@ function InventarioApp() {
       if (filter === 'off'  && d.status !== 'off')  return false;
       if (search) {
         const q = search.toLowerCase();
-        return d.name.toLowerCase().includes(q) || d.ip.includes(q) || d.model.toLowerCase().includes(q);
+        return d.name.toLowerCase().includes(q) || d.ip.includes(q) || (d.model || '').toLowerCase().includes(q);
       }
       return true;
     });
-  }, [filter, search]);
+  }, [filter, search, DEVICES]);
 
   const grouped = useMemoI(() => {
     const out = {};
@@ -42,6 +55,25 @@ function InventarioApp() {
     });
     return out;
   }, [filtered]);
+
+  // Acciones CRUD
+  const deleteDevice = async (id) => {
+    const dev = DEVICES.find(d => (d._raw_id || d.id) === id) || {};
+    const ok = await window.LBS_CONFIRM({
+      title: 'Eliminar dispositivo',
+      message: `¿Eliminar el UPS "${dev.name || '#' + id}" (${dev.ip || ''}) de la flota?`,
+      hint: 'El monitor dejará de poll-earlo. Su histórico de métricas se mantiene 90 días.',
+      confirmText: 'Eliminar', danger: true,
+    });
+    if (!ok) return;
+    try {
+      await window.LBS_API.deleteDevice(id);
+      window.LBS_TOAST && window.LBS_TOAST.success(`${dev.name || 'Dispositivo'} eliminado`);
+      window.LBS_DATA.refresh();
+    } catch (e) {
+      window.LBS_TOAST && window.LBS_TOAST.error('Error: ' + e.message);
+    }
+  };
 
   const statusPill = (s) => {
     if (s === 'ok')   return <span className="pill-status"><span style={{width:6,height:6,borderRadius:3,background:'currentColor',boxShadow:'0 0 6px currentColor'}}></span>EN LÍNEA</span>;
@@ -83,8 +115,8 @@ function InventarioApp() {
               <button className={"inv-pill " + (filter === 'warn' ? 'active' : '')} onClick={() => setFilter('warn')}>Alarma <span className="count">{counts.warn}</span></button>
               <button className={"inv-pill " + (filter === 'off'  ? 'active' : '')} onClick={() => setFilter('off')}>Offline <span className="count">{counts.off}</span></button>
             </div>
-            <button className="btn"><i className="bi bi-download ico"></i> EXPORTAR CSV</button>
-            <button className="btn ghost"><i className="bi bi-plus-circle ico"></i> NUEVO UPS</button>
+            <button className="btn" onClick={() => setShowAddSite(true)}><i className="bi bi-geo-alt ico"></i> NUEVO SITIO</button>
+            <button className="btn ghost" onClick={() => setShowAddDev(true)}><i className="bi bi-plus-circle ico"></i> NUEVO UPS</button>
           </div>
 
           <div className="inv-table-wrap">
@@ -123,34 +155,39 @@ function InventarioApp() {
                         const tempCls = d.temp > 50 ? 'err' : d.temp > 42 ? 'warn' : '';
                         return (
                           <tr key={d.id}>
-                            <td><span className={"led " + d.status}></span></td>
-                            <td>
+                            <td data-label="Estado"><span className={"led " + d.status}></span></td>
+                            <td data-label="Equipo">
                               <div className="dev-name">{d.name}</div>
                               <div className="dev-model">{d.model} · {d.kva} kVA</div>
                             </td>
-                            <td><span style={{color:'var(--cyan)'}}>{d.ip}</span></td>
-                            <td>{statusPill(d.status)}</td>
-                            <td>{d.status==='off' ? <span style={{color:'var(--text-faint)'}}>—</span> : <><b style={{color:'var(--text-main)'}}>{d.v_in.toFixed(1)}</b> <small style={{color:'var(--text-dim)'}}>V</small></>}</td>
-                            <td>{d.status==='off' ? <span style={{color:'var(--text-faint)'}}>—</span> : <><b style={{color:'var(--text-main)'}}>{d.v_out.toFixed(1)}</b> <small style={{color:'var(--text-dim)'}}>V</small></>}</td>
-                            <td>
+                            <td data-label="IP"><span style={{color:'var(--cyan)'}}>{d.ip}</span></td>
+                            <td data-label="Estado">{statusPill(d.status)}</td>
+                            <td data-label="V Entrada">{d.status==='off' ? <span style={{color:'var(--text-faint)'}}>—</span> : <><b style={{color:'var(--text-main)'}}>{d.v_in.toFixed(1)}</b> <small style={{color:'var(--text-dim)'}}>V</small></>}</td>
+                            <td data-label="V Salida">{d.status==='off' ? <span style={{color:'var(--text-faint)'}}>—</span> : <><b style={{color:'var(--text-main)'}}>{d.v_out.toFixed(1)}</b> <small style={{color:'var(--text-dim)'}}>V</small></>}</td>
+                            <td data-label="Carga">
                               {d.status==='off' ? <span style={{color:'var(--text-faint)'}}>—</span> : <>
                                 <span className="mini-bar"><i className={loadCls} style={{width:d.load+'%'}}></i></span>
                                 <b style={{color: loadCls==='err'?'var(--err)':loadCls==='warn'?'var(--warn)':'var(--text-main)'}}>{d.load}%</b>
                               </>}
                             </td>
-                            <td>
+                            <td data-label="Batería">
                               {d.status==='off' ? <span style={{color:'var(--text-faint)'}}>—</span> : <>
                                 <span className="mini-bar"><i className={batCls} style={{width:d.bat+'%'}}></i></span>
                                 <b style={{color: batCls==='err'?'var(--err)':batCls==='warn'?'var(--warn)':'var(--ok)'}}>{d.bat}%</b>
                               </>}
                             </td>
-                            <td>{d.status==='off' ? <span style={{color:'var(--text-faint)'}}>—</span> : <b style={{color: tempCls==='err'?'var(--err)':tempCls==='warn'?'var(--warn)':'var(--text-main)'}}>{d.temp.toFixed(1)} <small style={{color:'var(--text-dim)'}}>°C</small></b>}</td>
-                            <td><span style={{color:'var(--text-dim)',fontSize:11}}>{d.uptime}</span></td>
-                            <td>
+                            <td data-label="Temp">{d.status==='off' ? <span style={{color:'var(--text-faint)'}}>—</span> : <b style={{color: tempCls==='err'?'var(--err)':tempCls==='warn'?'var(--warn)':'var(--text-main)'}}>{d.temp.toFixed(1)} <small style={{color:'var(--text-dim)'}}>°C</small></b>}</td>
+                            <td data-label="Uptime"><span style={{color:'var(--text-dim)',fontSize:11}}>{d.uptime}</span></td>
+                            <td data-label="Acciones">
                               <div className="actions">
-                                <a href={(window.LBS_URLS && window.LBS_URLS.monitoreo) || "monitoreo.html"} title="Monitorear"><i className="bi bi-graph-up"></i></a>
+                                <a href={((window.LBS_URLS && window.LBS_URLS.monitoreo) || "monitoreo.html") + "?dev=" + d.id} title="Monitorear"><i className="bi bi-graph-up"></i></a>
                                 <a href={((window.LBS_URLS && window.LBS_URLS.diagnostico) || "diagnostico.html") + "?dev=" + d.id} title="Diagnóstico"><i className="bi bi-tools"></i></a>
-                                <button title="Más"><i className="bi bi-three-dots-vertical"></i></button>
+                                {d.protocolo === 'snmp' && (
+                                  <button title="Banco SNMP / OID" onClick={() => setOidEditing({ id: d._raw_id || d.id, name: d.name, ip: d.ip, snmp_community: d.snmp_community, snmp_version: d.snmp_version })}>
+                                    <i className="bi bi-list-columns"></i>
+                                  </button>
+                                )}
+                                <button title="Eliminar" onClick={() => deleteDevice(d._raw_id || d.id)}><i className="bi bi-trash"></i></button>
                               </div>
                             </td>
                           </tr>
@@ -160,8 +197,21 @@ function InventarioApp() {
                   );
                 })}
                 {filtered.length === 0 && (
-                  <tr><td colSpan="11" style={{ padding:'40px',textAlign:'center',color:'var(--text-dim)',fontFamily:'var(--font-mono)',fontSize:11,letterSpacing:'0.16em' }}>
-                    SIN RESULTADOS · AJUSTE LOS FILTROS
+                  <tr><td colSpan="11" style={{ padding: 0 }}>
+                    <div className="lbs-empty" style={{ borderRadius: 0, borderLeft: 0, borderRight: 0 }}>
+                      <i className="bi bi-hdd-stack"></i>
+                      {DEVICES.length === 0 ? <>
+                        <h4>No hay UPS en la flota</h4>
+                        <p>Agrega el primer UPS — el portal empezará a poll-earlo automáticamente. Si tienes routers Teltonika con UPS detrás, usa el wizard de ZeroTier en Diagnóstico.</p>
+                        <div style={{display:'flex', gap:10, flexWrap:'wrap', justifyContent:'center'}}>
+                          <button className="btn" onClick={() => setShowAddDev(true)}><i className="bi bi-plus-circle"></i> Nuevo UPS</button>
+                          <button className="btn ghost" onClick={() => setShowAddSite(true)}><i className="bi bi-geo-alt"></i> Nuevo sitio</button>
+                        </div>
+                      </> : <>
+                        <h4>Sin resultados</h4>
+                        <p>Ajusta el buscador o los filtros para encontrar UPS.</p>
+                      </>}
+                    </div>
                   </td></tr>
                 )}
               </tbody>
@@ -176,6 +226,16 @@ function InventarioApp() {
             options={['#00b4ff', '#22e1ff', '#ff3df0', '#25f4a7', '#ffb000']} />
         </TweakSection>
       </TweaksPanel>
+
+      {showAddDev  && <AddDeviceModal sitios={SITES} onClose={() => setShowAddDev(false)}  onSaved={() => { setShowAddDev(false);  window.LBS_DATA.refresh(); window.LBS_TOAST && window.LBS_TOAST.success('UPS agregado a la flota'); }} />}
+      {showAddSite && <AddSiteModal               onClose={() => setShowAddSite(false)} onSaved={() => { setShowAddSite(false); window.LBS_DATA.refresh(); window.LBS_TOAST && window.LBS_TOAST.success('Sitio creado'); }} />}
+      {oidEditing && window.OIDEditor && (
+        <window.OIDEditor
+          device={oidEditing}
+          onClose={() => setOidEditing(null)}
+          onSaved={() => { setOidEditing(null); window.LBS_DATA && window.LBS_DATA.refresh(); }}
+        />
+      )}
     </div>
   );
 }

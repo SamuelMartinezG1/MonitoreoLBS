@@ -1,161 +1,486 @@
-// DiagnosticoApp.jsx — Network/UPS diagnostic tools with terminal output
+// DiagnosticoApp.jsx — Centro de Diagnóstico de Red (todas las herramientas
+// cableadas al backend real)
+//
+// Categorías:
+//   CONECTIVIDAD     ping · port · traceroute · interfaces
+//   SNMP             snmp-get · snmp-walk · snmp-autodetect · snmp-test
+//   MODBUS           modbus-test
+//   DESCUBRIMIENTO   ip-scan · snmp-mass-scan
+//   RED              zerotier · ping-all-routers · network-health
 
-const { useState: useStateD, useEffect: useEffectD, useRef: useRefD } = React;
+const { useState: useStateD, useEffect: useEffectD, useRef: useRefD, useMemo: useMemoD } = React;
 
-const TOOLS = [
-  { id:'ping',   label:'Ping',         icon:'bi-broadcast-pin' },
-  { id:'trace',  label:'Traceroute',   icon:'bi-diagram-2' },
-  { id:'snmp',   label:'SNMP Walk',    icon:'bi-router' },
-  { id:'self',   label:'Self-Test UPS',icon:'bi-shield-check' },
-  { id:'load',   label:'Battery Load', icon:'bi-battery-charging' },
-];
+// ──────────────────────────────────────────────────────────────────────
+// Catálogo de herramientas
+// ──────────────────────────────────────────────────────────────────────
+const TOOLS = {
+  // Conectividad
+  ping: {
+    group: 'CONECTIVIDAD', label: 'Ping ICMP', icon: 'bi-broadcast-pin',
+    desc: 'Verifica alcance ICMP a un host (4 paquetes).',
+    fields: [{ name: 'ip', label: 'Host / IP', type: 'host', def: '' }],
+    endpoint: 'ping',
+    payload: v => ({ ip: v.ip }),
+    parse: 'text',
+  },
+  port: {
+    group: 'CONECTIVIDAD', label: 'Puerto TCP', icon: 'bi-door-closed',
+    desc: 'Prueba si un puerto TCP está abierto.',
+    fields: [
+      { name: 'ip',   label: 'Host / IP',  type: 'host',   def: '' },
+      { name: 'port', label: 'Puerto',     type: 'number', def: 161,
+        suggest: [22, 80, 443, 161, 502, 5432, 5005, 3389, 8080] },
+    ],
+    endpoint: 'port',
+    payload: v => ({ ip: v.ip, port: Number(v.port) }),
+    parse: 'port',
+  },
+  route: {
+    group: 'CONECTIVIDAD', label: 'Traceroute', icon: 'bi-diagram-2',
+    desc: 'Lista saltos hasta el destino.',
+    fields: [{ name: 'ip', label: 'Host / IP', type: 'host', def: '' }],
+    endpoint: 'route',
+    payload: v => ({ ip: v.ip }),
+    parse: 'text',
+  },
+  interfaces: {
+    group: 'CONECTIVIDAD', label: 'Interfaces del host', icon: 'bi-hdd-network',
+    desc: 'Tabla de interfaces IP del contenedor portal.',
+    fields: [],
+    endpoint: 'interfaces',
+    method: 'GET',
+    parse: 'text',
+  },
 
-const PRESETS = {
-  ping:  [{ name:'host',  label:'Host',  type:'text',   def:'192.168.3.10' },
-          { name:'count', label:'Count', type:'number', def:8 },
-          { name:'iface', label:'Interface', type:'select', def:'eth0', opts:['eth0','eth1','vlan20'] }],
-  trace: [{ name:'host',  label:'Host',  type:'text',   def:'192.168.3.10' },
-          { name:'hops',  label:'Max hops', type:'number', def:15 },
-          { name:'proto', label:'Protocol', type:'select', def:'ICMP', opts:['ICMP','UDP','TCP'] }],
-  snmp:  [{ name:'host',  label:'Host',  type:'text',   def:'192.168.3.10' },
-          { name:'comm',  label:'Community', type:'text',  def:'public' },
-          { name:'oid',   label:'OID Branch', type:'select', def:'PowerNet-MIB::upsBasic', opts:['PowerNet-MIB::upsBasic','RFC1628::upsOutput','RFC1628::upsBattery','XUPS-MIB::xupsInput'] }],
-  self:  [{ name:'host',  label:'Host',  type:'text',   def:'192.168.3.10' },
-          { name:'depth', label:'Depth', type:'select', def:'standard', opts:['quick','standard','deep'] }],
-  load:  [{ name:'host',  label:'Host',  type:'text',   def:'192.168.3.10' },
-          { name:'load',  label:'Load %', type:'number', def:75 },
-          { name:'dur',   label:'Duration (s)', type:'number', def:30 }],
+  // SNMP
+  'snmp-get': {
+    group: 'SNMP', label: 'SNMP Get', icon: 'bi-bullseye',
+    desc: 'Lee un OID específico.',
+    fields: [
+      { name: 'ip',  label: 'Host / IP',  type: 'host', def: '' },
+      { name: 'oid', label: 'OID', type: 'text',  def: '1.3.6.1.2.1.1.1.0',
+        suggest: ['1.3.6.1.2.1.1.1.0', '1.3.6.1.2.1.1.5.0', '1.3.6.1.2.1.33.1.2.4.0', '1.3.6.1.4.1.935.1.1.1.2.2.1.0'] },
+      { name: 'community', label: 'Community', type: 'text',  def: 'public' },
+      { name: 'version',   label: 'Versión',   type: 'select', def: 1,
+        options: [{ v: 0, l: 'SNMPv1' }, { v: 1, l: 'SNMPv2c' }] },
+    ],
+    endpoint: 'snmp-get',
+    payload: v => ({ ip: v.ip, oid: v.oid, community: v.community, version: Number(v.version) }),
+    parse: 'snmpget',
+  },
+  'snmp-walk': {
+    group: 'SNMP', label: 'SNMP Walk', icon: 'bi-list-columns',
+    desc: 'Recorre una subrama OID (hasta 50 entradas).',
+    fields: [
+      { name: 'ip',  label: 'Host / IP',  type: 'host', def: '' },
+      { name: 'oid', label: 'OID raíz', type: 'text', def: '1.3.6.1.2.1.1',
+        suggest: ['1.3.6.1.2.1.1', '1.3.6.1.2.1.33', '1.3.6.1.4.1.935.1.1.1', '1.3.6.1.4.1.56788'] },
+      { name: 'community', label: 'Community', type: 'text',   def: 'public' },
+      { name: 'version',   label: 'Versión',   type: 'select', def: 1,
+        options: [{ v: 0, l: 'SNMPv1' }, { v: 1, l: 'SNMPv2c' }] },
+    ],
+    endpoint: 'snmp-walk',
+    payload: v => ({ ip: v.ip, oid: v.oid, community: v.community, version: Number(v.version) }),
+    parse: 'snmpwalk',
+  },
+  'snmp-autodetect': {
+    group: 'SNMP', label: 'Auto-detectar SNMP', icon: 'bi-magic',
+    desc: 'Prueba versiones + communities, detecta tipo de UPS y lista OIDs disponibles.',
+    fields: [{ name: 'ip', label: 'Host / IP', type: 'host', def: '' }],
+    endpoint: 'snmp-autodetect',
+    payload: v => ({ ip: v.ip }),
+    parse: 'autodetect',
+  },
+  'snmp': {
+    group: 'SNMP', label: 'Test rápido UPS', icon: 'bi-cpu',
+    desc: 'Lee los OIDs base del cliente SNMP integrado (INVT/Megatec).',
+    fields: [
+      { name: 'ip',        label: 'Host / IP',    type: 'host',   def: '' },
+      { name: 'community', label: 'Community',    type: 'text',   def: 'public' },
+      { name: 'port',      label: 'Puerto SNMP',  type: 'number', def: 161 },
+    ],
+    endpoint: 'snmp',
+    payload: v => ({ ip: v.ip, community: v.community, port: Number(v.port) }),
+    parse: 'text',
+  },
+
+  // Modbus
+  modbus: {
+    group: 'MODBUS', label: 'Test Modbus TCP', icon: 'bi-plug',
+    desc: 'Verifica conexión y lectura de un registro.',
+    fields: [
+      { name: 'ip',       label: 'Host / IP',  type: 'host',   def: '' },
+      { name: 'port',     label: 'Puerto',     type: 'number', def: 502 },
+      { name: 'slave_id', label: 'Slave ID',   type: 'number', def: 1 },
+    ],
+    endpoint: 'modbus',
+    payload: v => ({ ip: v.ip, port: Number(v.port), slave_id: Number(v.slave_id) }),
+    parse: 'text',
+  },
+
+  // Descubrimiento
+  scan: {
+    group: 'DESCUBRIMIENTO', label: 'Scan rango IP', icon: 'bi-radar',
+    desc: 'Recorre IPs en una /24 buscando hosts ICMP/SNMP/Modbus.',
+    fields: [
+      { name: 'network', label: 'Red (3 octetos)', type: 'text',   def: '192.168.1' },
+      { name: 'start',   label: 'Desde',          type: 'number', def: 1 },
+      { name: 'end',     label: 'Hasta',          type: 'number', def: 50 },
+    ],
+    endpoint: 'scan',
+    payload: v => ({ network: v.network, start: Number(v.start), end: Number(v.end) }),
+    parse: 'scan',
+  },
+  'snmp-mass-scan': {
+    group: 'DESCUBRIMIENTO', label: 'Scan SNMP masivo', icon: 'bi-search',
+    desc: 'Encuentra dispositivos SNMP en un rango.',
+    fields: [
+      { name: 'network',   label: 'Red (3 octetos)', type: 'text',   def: '192.168.1' },
+      { name: 'start',     label: 'Desde',          type: 'number', def: 1 },
+      { name: 'end',       label: 'Hasta',          type: 'number', def: 50 },
+      { name: 'community', label: 'Community',      type: 'text',   def: 'public' },
+      { name: 'port',      label: 'Puerto',         type: 'number', def: 161 },
+    ],
+    endpoint: 'snmp-mass-scan',
+    payload: v => ({ network: v.network, start: Number(v.start), end: Number(v.end),
+                     community: v.community, port: Number(v.port) }),
+    parse: 'snmpmass',
+  },
+
+  // ── ZeroTier (categoría dedicada con flujos operativos) ──
+  'zt-status': {
+    group: 'ZEROTIER', label: 'Estado del nodo', icon: 'bi-broadcast',
+    desc: 'Info del nodo ZeroTier local (ID, versión, online).',
+    fields: [],
+    api: 'ztStatus',
+    parse: 'zt-status',
+  },
+  'zt-networks': {
+    group: 'ZEROTIER', label: 'Mis networks', icon: 'bi-diagram-3',
+    desc: 'Lista de networks unidas (IDs, IPs asignadas, rutas) con opción de salir.',
+    fields: [],
+    api: 'ztNetworks',
+    parse: 'zt-networks',
+  },
+  'zt-join': {
+    group: 'ZEROTIER', label: 'Unirse a network', icon: 'bi-box-arrow-in-right',
+    desc: 'Conecta el host a una network ZeroTier (16 hex). Recuerda autorizar el nodo en my.zerotier.com.',
+    fields: [{ name: 'network_id', label: 'Network ID (16 hex)', type: 'text', def: '' }],
+    api: 'ztJoin',
+    payload: v => v.network_id,
+    parse: 'zt-join',
+  },
+  'zt-peers': {
+    group: 'ZEROTIER', label: 'Peers', icon: 'bi-people',
+    desc: 'Otros nodos ZeroTier conocidos por este host (Teltonika, clientes, etc.).',
+    fields: [],
+    api: 'ztPeers',
+    parse: 'zt-peers',
+  },
+  'zt-scan': {
+    group: 'ZEROTIER', label: 'Escanear red ZT', icon: 'bi-radar',
+    desc: 'Recorre la subred de una network (ICMP + SNMP) e identifica hosts.',
+    fields: [
+      { name: 'network_id', label: 'Network ID', type: 'text', def: '' },
+      { name: 'community',  label: 'Community SNMP', type: 'text', def: 'public' },
+    ],
+    api: 'ztScanNet',
+    payload: v => [v.network_id, v.community],
+    parse: 'zt-scan',
+  },
+  'zt-find-teltonika': {
+    group: 'ZEROTIER', label: 'Detectar Teltonika', icon: 'bi-router',
+    desc: 'Localiza routers Teltonika (RUT955/956/etc.) en una network ZeroTier.',
+    fields: [
+      { name: 'network_id', label: 'Network ID', type: 'text', def: '' },
+      { name: 'community',  label: 'Community SNMP', type: 'text', def: 'public' },
+    ],
+    api: 'ztFindTelt',
+    payload: v => [v.network_id, v.community],
+    parse: 'zt-find-teltonika',
+  },
+  'zt-scan-site': {
+    group: 'ZEROTIER', label: 'Escanear LAN del sitio', icon: 'bi-geo-alt',
+    desc: 'Recorre la subred LAN detrás del Teltonika de un sitio para descubrir UPS.',
+    fields: [
+      { name: 'sitio_id',  label: 'Sitio', type: 'site-select', def: '' },
+      { name: 'community', label: 'Community SNMP', type: 'text', def: 'public' },
+    ],
+    api: 'ztScanSite',
+    payload: v => [v.sitio_id, v.community],
+    parse: 'zt-scan-site',
+  },
+
+  // Red overlay (legacy: zerotier-status simple del diagnostic)
+  'zerotier-status': {
+    group: 'RED', label: 'Estado ZeroTier (CLI)', icon: 'bi-globe2',
+    desc: 'Info / networks / peers del cliente ZeroTier vía zerotier-cli del host.',
+    fields: [],
+    endpoint: 'zerotier-status',
+    payload: () => ({}),
+    parse: 'zerotier',
+  },
+  'ping-all-routers': {
+    group: 'RED', label: 'Ping a todos los routers', icon: 'bi-router',
+    desc: 'Ping a los routers de cada sitio (LAN + ZeroTier).',
+    fields: [],
+    endpoint: 'ping-all-routers',
+    payload: () => ({}),
+    parse: 'routers',
+  },
+  'network-health': {
+    group: 'RED', label: 'Salud de red completa', icon: 'bi-heart-pulse',
+    desc: 'Ping a routers + UPS (estado consolidado).',
+    fields: [],
+    endpoint: 'network-health',
+    payload: () => ({}),
+    parse: 'health',
+  },
 };
 
-function buildOutput(tool, params) {
-  const ts = () => {
-    const d = new Date();
-    return d.toTimeString().slice(0,8) + '.' + String(d.getMilliseconds()).padStart(3,'0').slice(0,3);
-  };
-  const lines = [];
-  const push = (msg, cls, ts_) => lines.push({ ts: ts_ === undefined ? ts() : ts_, msg, cls });
+const GROUPS = ['CONECTIVIDAD', 'SNMP', 'MODBUS', 'DESCUBRIMIENTO', 'ZEROTIER', 'RED'];
 
-  if (tool === 'ping') {
-    push(`$ ping ${params.host} -c ${params.count} -I ${params.iface}`, 'cmd');
-    push(`PING ${params.host} (${params.host}) 56(84) bytes of data.`, 'dim');
-    const n = Math.min(parseInt(params.count)||8, 12);
-    let total = 0, lossCount = 0;
-    for (let i = 0; i < n; i++) {
-      const lost = Math.random() < 0.05;
-      if (lost) { push(`request timeout for icmp_seq=${i}`, 'warn'); lossCount++; continue; }
-      const rtt = (0.8 + Math.random()*2.6).toFixed(2);
-      total += parseFloat(rtt);
-      push(`64 bytes from ${params.host}: icmp_seq=${i} ttl=64 time=${rtt} ms`, '');
-    }
-    push('', '');
-    push(`--- ${params.host} ping statistics ---`, 'dim');
-    push(`${n} packets transmitted, ${n-lossCount} received, ${((lossCount/n)*100).toFixed(1)}% packet loss`, lossCount?'warn':'ok');
-    const avg = (total/(n-lossCount)).toFixed(2);
-    push(`rtt min/avg/max = 0.84/${avg}/3.40 ms`, 'ok');
-  }
-
-  if (tool === 'trace') {
-    push(`$ traceroute -m ${params.hops} -P ${params.proto} ${params.host}`, 'cmd');
-    push(`traceroute to ${params.host}, ${params.hops} hops max`, 'dim');
-    const hops = [
-      ['10.0.0.1',    'gw-core-01',     '0.42'],
-      ['10.0.1.1',    'sw-dist-03',     '0.81'],
-      ['10.0.20.1',   'sw-access-vallejo', '1.24'],
-      [params.host,   'ups-03-01.lan',  '1.86'],
-    ];
-    hops.forEach((h, i) => push(` ${i+1}  ${h[1].padEnd(24)} (${h[0].padEnd(14)})  ${h[2]} ms  ${(parseFloat(h[2])+0.04).toFixed(2)} ms  ${(parseFloat(h[2])+0.08).toFixed(2)} ms`, ''));
-    push(`✓ destination reached in ${hops.length} hops`, 'ok');
-  }
-
-  if (tool === 'snmp') {
-    push(`$ snmpwalk -v2c -c ${params.comm} ${params.host} ${params.oid}`, 'cmd');
-    const branch = params.oid;
-    const rows = branch.includes('Battery') ? [
-      ['upsBatteryStatus.0',          'INTEGER',  'batteryNormal(2)'],
-      ['upsSecondsOnBattery.0',       'INTEGER',  '0 seconds'],
-      ['upsEstimatedMinutesRemaining.0','INTEGER','42 minutes'],
-      ['upsEstimatedChargeRemaining.0','INTEGER', '96 percent'],
-      ['upsBatteryVoltage.0',         'INTEGER',  '274 (0.1 Volts DC)'],
-      ['upsBatteryTemperature.0',     'INTEGER',  '28 degrees Celsius'],
-    ] : branch.includes('Output') ? [
-      ['upsOutputSource.0',           'INTEGER',  'normal(3)'],
-      ['upsOutputFrequency.0',        'INTEGER',  '600 (0.1 Hertz)'],
-      ['upsOutputNumLines.0',         'INTEGER',  '3'],
-      ['upsOutputVoltage.1',          'INTEGER',  '1204 (0.1 RMS Volts)'],
-      ['upsOutputVoltage.2',          'INTEGER',  '1198 (0.1 RMS Volts)'],
-      ['upsOutputVoltage.3',          'INTEGER',  '1202 (0.1 RMS Volts)'],
-      ['upsOutputPower.1',            'INTEGER',  '2840 Watts'],
-      ['upsOutputPercentLoad.1',      'INTEGER',  '72'],
-    ] : branch.includes('Input') ? [
-      ['xupsInputFrequency.0',        'INTEGER',  '601 (0.1 Hertz)'],
-      ['xupsInputNumPhases.0',        'INTEGER',  '3'],
-      ['xupsInputVoltage.1',          'INTEGER',  '124 RMS Volts'],
-      ['xupsInputVoltage.2',          'INTEGER',  '122 RMS Volts'],
-      ['xupsInputVoltage.3',          'INTEGER',  '123 RMS Volts'],
-      ['xupsInputCurrent.1',          'INTEGER',  '14 RMS Amps'],
-    ] : [
-      ['upsBasicIdentModel.0',        'STRING',   '"EATON 9PX 6kVA"'],
-      ['upsBasicIdentName.0',         'STRING',   '"UPS-03-01"'],
-      ['upsBasicBatteryStatus.0',     'INTEGER',  'batteryNormal(2)'],
-      ['upsBasicOutputStatus.0',      'INTEGER',  'onLine(2)'],
-      ['upsBasicSystemInternalTemperature.0','INTEGER','34'],
-    ];
-    rows.forEach(r => push(`${branch}.${r[0].padEnd(34)} = ${r[1].padEnd(10)} ${r[2]}`, ''));
-    push('', '');
-    push(`✓ Walk completed — ${rows.length} variables retrieved`, 'ok');
-  }
-
-  if (tool === 'self') {
-    push(`$ ups-cli selftest --host ${params.host} --depth ${params.depth}`, 'cmd');
-    push(`Connecting to ${params.host}:161 via SNMPv2c...`, 'dim');
-    push(`Connected. Identifying device...`, 'dim');
-    push(`  → EATON 9PX 6kVA  ·  FW 02.14.0008  ·  S/N PX-2204-08812`, '');
-    push(``, '');
-    push(`Starting ${params.depth} self-test sequence...`, 'cmd');
-    const tests = [
-      ['Communication link',           'pass'],
-      ['Input voltage range',          'pass'],
-      ['Output voltage regulation',    'pass'],
-      ['Output frequency',             'pass'],
-      ['Battery presence',             'pass'],
-      ['Battery voltage under load',   'pass'],
-      ['Inverter switch (15 s)',       'pass'],
-      ['Transfer time',                'pass'],
-      ['Internal fans',                'pass'],
-      ['Temperature sensors',          'warn'],
-      ['Bypass circuit',               'pass'],
-    ];
-    tests.forEach(t => {
-      const ok = t[1] === 'pass';
-      const tag = ok ? '[ PASS ]' : t[1] === 'warn' ? '[ WARN ]' : '[ FAIL ]';
-      const extra = t[1] === 'warn' ? '  — Sensor T2 reading 48.6°C (umbral 50°C)' : '';
-      push(`  ${tag}  ${t[0]}${extra}`, ok ? 'ok' : t[1] === 'warn' ? 'warn' : 'err');
-    });
-    push(``, '');
-    push(`SELF-TEST COMPLETE  —  10 PASS  ·  1 WARN  ·  0 FAIL`, 'ok');
-    push(`Recommendation: schedule maintenance — temperature sensor T2 trending high`, 'warn');
-  }
-
-  if (tool === 'load') {
-    push(`$ ups-cli battery-load --host ${params.host} --load ${params.load}% --duration ${params.dur}s`, 'cmd');
-    push(`WARNING: this test transfers load to battery for ${params.dur} seconds`, 'warn');
-    push(`Initiating transfer at ${ts()}`, 'dim');
-    const ticks = Math.min(parseInt(params.dur)||30, 10);
-    for (let i = 0; i < ticks; i++) {
-      const v = (272 - i*0.3).toFixed(1);
-      const a = (parseFloat(params.load)/8 + Math.random()*0.4).toFixed(1);
-      const t = (28.2 + i*0.15).toFixed(1);
-      push(`  t+${String(i*3).padStart(2,'0')}s  V=${v}Vdc  I=${a}A  T=${t}°C  load=${params.load}%`, '');
-    }
-    push(``, '');
-    push(`Restoring mains... transfer time = 4.2 ms`, 'dim');
-    push(`✓ Battery test PASSED  —  voltage held above 268 Vdc throughout`, 'ok');
-    push(`Battery capacity estimate: 96% of nameplate (24.0 min @ ${params.load}% load)`, 'ok');
-  }
-
-  return lines;
+// ──────────────────────────────────────────────────────────────────────
+// Helpers de formato
+// ──────────────────────────────────────────────────────────────────────
+function nowTs() {
+  const d = new Date();
+  return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0').slice(0, 3);
 }
 
+function tagFromMsg(msg) {
+  const s = String(msg || '');
+  if (/✅|success|✓|exitos|abierto|alive|ONLINE|received/i.test(s)) return 'ok';
+  if (/⚠|warn|timeout|degradado/i.test(s)) return 'warn';
+  if (/❌|error|fail|cerrado|FILTRADO|OFFLINE|unreachable|loss/i.test(s)) return 'err';
+  if (/^\$\s|>>>|^→/.test(s)) return 'cmd';
+  return '';
+}
+
+function textToLines(text) {
+  if (!text) return [];
+  return String(text).split('\n').map(line => ({
+    msg: line,
+    cls: tagFromMsg(line),
+  }));
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Sub-componente: render estructurado de resultados
+// ──────────────────────────────────────────────────────────────────────
+function ResultsView({ parse, resp }) {
+  if (!resp) return null;
+
+  // Tabla de hosts encontrados (scan)
+  if (parse === 'scan') {
+    const hosts = resp.hosts || [];
+    const alive = hosts.filter(h => (h.ports || []).length > 0 || h.alive);
+    if (alive.length === 0) return null;
+    return (
+      <div className="diag-result-block">
+        <h4>HOSTS DETECTADOS · {alive.length}/{hosts.length}</h4>
+        <table className="diag-table">
+          <thead><tr><th>IP</th><th>Puertos abiertos</th></tr></thead>
+          <tbody>
+            {alive.map(h => (
+              <tr key={h.ip}>
+                <td className="mono cyan">{h.ip}</td>
+                <td>{(h.ports || []).map(p => <span key={p} className="diag-port-badge">{p}</span>)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // SNMP mass scan: dispositivos con sysDescr
+  if (parse === 'snmpmass') {
+    const ds = resp.dispositivos || [];
+    if (!ds.length) return null;
+    return (
+      <div className="diag-result-block">
+        <h4>DISPOSITIVOS SNMP · {resp.total_encontrados}/{resp.total_escaneados}</h4>
+        <table className="diag-table">
+          <thead><tr><th>IP</th><th>sysDescr</th></tr></thead>
+          <tbody>
+            {ds.map(d => (
+              <tr key={d.ip}>
+                <td className="mono cyan">{d.ip}</td>
+                <td>{d.descripcion}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // SNMP walk: OIDs + valores
+  if (parse === 'snmpwalk') {
+    const rs = resp.results || [];
+    if (!rs.length) return null;
+    return (
+      <div className="diag-result-block">
+        <h4>OIDs ENCONTRADOS · {resp.count}{resp.limit_reached ? ' (límite alcanzado)' : ''}</h4>
+        <table className="diag-table">
+          <thead><tr><th style={{width:'45%'}}>OID</th><th>Valor</th></tr></thead>
+          <tbody>
+            {rs.map((r, i) => (
+              <tr key={i}>
+                <td className="mono cyan">{r.oid}</td>
+                <td className="mono">{r.value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // SNMP get
+  if (parse === 'snmpget') {
+    const rs = resp.results || [];
+    if (!rs.length) return null;
+    return (
+      <div className="diag-result-block">
+        <h4>VALORES</h4>
+        <table className="diag-table">
+          <thead><tr><th>OID</th><th>Tipo</th><th>Valor</th></tr></thead>
+          <tbody>
+            {rs.map((r, i) => (
+              <tr key={i}>
+                <td className="mono cyan">{r.oid}</td>
+                <td className="mono dim">{r.type}</td>
+                <td className="mono"><b>{r.value}</b></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // SNMP autodetect: resumen + OIDs detectados
+  if (parse === 'autodetect') {
+    const c = resp.config || {};
+    if (!c.success) return null;
+    return (
+      <div className="diag-result-block">
+        <h4>CONFIGURACIÓN DETECTADA</h4>
+        <div className="diag-kv-grid">
+          <div><span>Versión SNMP</span><b>{c.version}</b></div>
+          <div><span>Community</span><b className="cyan">{c.community}</b></div>
+          <div><span>Tipo UPS</span><b>{c.ups_type || '—'}</b></div>
+          <div><span>OIDs funcionando</span><b>{(c.oids_working || []).length}</b></div>
+        </div>
+        {c.device_info && Object.keys(c.device_info).length > 0 && (
+          <details style={{marginTop:12}}>
+            <summary style={{cursor:'pointer',fontSize:11,letterSpacing:'0.12em',color:'var(--text-dim)'}}>
+              VER {Object.keys(c.device_info).length} ATRIBUTOS DETECTADOS
+            </summary>
+            <table className="diag-table" style={{marginTop:8}}>
+              <tbody>
+                {Object.entries(c.device_info).map(([k, v]) => (
+                  <tr key={k}><td className="mono dim">{k}</td><td className="mono">{String(v).slice(0, 120)}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        )}
+      </div>
+    );
+  }
+
+  // Ping a routers
+  if (parse === 'routers') {
+    const rs = resp.resultados || [];
+    if (!rs.length) return null;
+    return (
+      <div className="diag-result-block">
+        <h4>ROUTERS · {resp.online} online / {resp.offline} offline</h4>
+        <table className="diag-table">
+          <thead><tr><th>Sitio</th><th>Tipo</th><th>IP</th><th>Estado</th></tr></thead>
+          <tbody>
+            {rs.map((r, i) => (
+              <tr key={i}>
+                <td>{r.sitio}</td>
+                <td className="dim">{r.tipo}</td>
+                <td className="mono cyan">{r.ip}</td>
+                <td><span className={"diag-pill " + (r.online ? 'ok' : 'err')}>{r.online ? 'ONLINE' : 'OFFLINE'}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // Salud de red
+  if (parse === 'health') {
+    const rs = resp.resultados || [];
+    const res = resp.resumen || {};
+    if (!rs.length) return null;
+    return (
+      <div className="diag-result-block">
+        <h4>SALUD DE RED · {res.online} online · {res.degradado} degradado · {res.offline} offline (total {res.total})</h4>
+        <table className="diag-table">
+          <thead><tr><th>Nombre</th><th>Tipo</th><th>IP</th><th>Ping</th><th>SNMP</th><th>Estado</th></tr></thead>
+          <tbody>
+            {rs.map((r, i) => (
+              <tr key={i}>
+                <td>{r.nombre}</td>
+                <td className="dim">{r.tipo}</td>
+                <td className="mono cyan">{r.ip}</td>
+                <td>{r.ping ? <span className="diag-pill ok">{r.ping_ms || 0} ms</span> : <span className="diag-pill err">—</span>}</td>
+                <td>{r.snmp === null ? <span className="dim">—</span> : r.snmp ? <span className="diag-pill ok">OK</span> : <span className="diag-pill err">NO</span>}</td>
+                <td><span className={"diag-pill " + (r.estado === 'ONLINE' ? 'ok' : r.estado === 'DEGRADADO' ? 'warn' : 'err')}>{r.estado}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // ZeroTier
+  if (parse === 'zerotier') {
+    if (!resp.disponible) return null;
+    return (
+      <div className="diag-result-block">
+        <h4>ZEROTIER</h4>
+        {resp.info && <pre className="diag-pre">{resp.info}</pre>}
+        {resp.networks && (<>
+          <h5>NETWORKS</h5>
+          <pre className="diag-pre">{resp.networks}</pre>
+        </>)}
+        {resp.peers && (<>
+          <h5>PEERS</h5>
+          <pre className="diag-pre">{resp.peers.split('\n').slice(0, 20).join('\n')}{resp.peers.split('\n').length > 20 ? '\n…' : ''}</pre>
+        </>)}
+      </div>
+    );
+  }
+
+  // Puerto
+  if (parse === 'port' && resp.success) {
+    return (
+      <div className="diag-result-block">
+        <div className="diag-kv-grid">
+          <div><span>Puerto</span><b>{resp.port}</b></div>
+          <div><span>Estado</span><b className={resp.open ? 'ok-text' : 'err-text'}>{resp.open ? 'ABIERTO' : 'CERRADO'}</b></div>
+          <div><span>Latencia</span><b>{resp.elapsed_ms ? resp.elapsed_ms + ' ms' : '—'}</b></div>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Componente principal
+// ──────────────────────────────────────────────────────────────────────
 function DiagnosticoApp() {
   const [t, setTweak] = useTweaks(window.TWEAK_DEFAULTS);
   const accent = t.accent || '#00b4ff';
@@ -164,217 +489,322 @@ function DiagnosticoApp() {
     document.documentElement.style.setProperty('--accent-glow', accent + '55');
   }, [accent]);
 
-  const { DEVICES } = window.MOCK;
+  // ── Datos en vivo desde DataLayer ──
+  const [, setTick] = useStateD(0);
+  useEffectD(() => {
+    const fn = () => setTick(x => x + 1);
+    window.addEventListener('lbs:data-refresh', fn);
+    return () => window.removeEventListener('lbs:data-refresh', fn);
+  }, []);
+
+  const { DEVICES = [], SITES = [] } = window.MOCK || {};
+
+  // Importar UPS detectado por scan-site-lan → abre modal pre-llenado
+  const [importPrefill, setImportPrefill] = useStateD(null);
+  useEffectD(() => {
+    const onImport = (e) => setImportPrefill(e.detail || null);
+    window.addEventListener('lbs:import-device', onImport);
+    return () => window.removeEventListener('lbs:import-device', onImport);
+  }, []);
+
+  // Wizard ZT
+  const [showWizard, setShowWizard] = useStateD(false);
+
+  // ── Selección de herramienta ──
   const params = new URLSearchParams(window.location.search);
-  const initialDev = params.get('dev') || 'u01';
-  const [devId, setDevId] = useStateD(initialDev);
-  const device = DEVICES.find(d => d.id === devId) || DEVICES[0];
+  const urlDev = params.get('dev');
+  const [toolId, setToolId] = useStateD('ping');
+  const tool = TOOLS[toolId];
 
-  const [tool, setTool] = useStateD('ping');
-  const fields = PRESETS[tool];
-
-  const initVals = () => {
+  // Form values
+  const initVals = useMemoD(() => {
     const obj = {};
-    PRESETS[tool].forEach(f => { obj[f.name] = f.name === 'host' ? device.ip : f.def; });
+    (tool.fields || []).forEach(f => { obj[f.name] = f.def !== undefined ? f.def : ''; });
+    if (urlDev) {
+      const d = DEVICES.find(x => String(x._raw_id || x.id) === String(urlDev));
+      if (d && obj.ip !== undefined) obj.ip = d.ip;
+    }
     return obj;
-  };
+  }, [toolId]);
   const [vals, setVals] = useStateD(initVals);
-  useEffectD(() => { setVals(initVals()); /* eslint-disable-next-line */ }, [tool, devId]);
+  useEffectD(() => setVals(initVals), [toolId]);
 
-  const [running, setRunning] = useStateD(false);
+  // Output (líneas) + estructurado
   const [output, setOutput] = useStateD([
-    { ts: '14:25:30.812', msg: '$ session opened — lbs-monitor diagnostic terminal v3.2', cls: 'cmd' },
-    { ts: '14:25:30.815', msg: 'Connected to ' + device.name + '  (' + device.ip + ')', cls: 'dim' },
-    { ts: '14:25:30.820', msg: 'Ready. Select a tool, set parameters, click EJECUTAR.', cls: '' },
+    { ts: nowTs(), msg: '$ Centro de diagnóstico LBS · lista para operar', cls: 'cmd' },
+    { ts: nowTs(), msg: 'Selecciona una herramienta en el panel izquierdo, ajusta parámetros y ejecuta.', cls: 'dim' },
   ]);
-  const termRef = useRefD(null);
-  const [streamIdx, setStreamIdx] = useStateD(0);
+  const [structured, setStructured] = useStateD(null);
+  const [running,    setRunning]    = useStateD(false);
+  const [history,    setHistory]    = useStateD([]); // {tool, ts, ok, summary}
 
+  const termRef = useRefD(null);
   useEffectD(() => {
     if (termRef.current) termRef.current.scrollTop = termRef.current.scrollHeight;
-  }, [output, streamIdx]);
+  }, [output.length]);
 
-  const run = () => {
+  // ── Ejecutar ──
+  const appendLines = (lines, baseCls) => {
+    if (!lines.length) return;
+    setOutput(prev => [...prev, ...lines.map(l => ({
+      ts: nowTs(),
+      msg: typeof l === 'string' ? l : l.msg,
+      cls: typeof l === 'string' ? (baseCls || '') : (l.cls || baseCls || ''),
+    }))]);
+  };
+
+  const run = async () => {
     if (running) return;
     setRunning(true);
-    const lines = buildOutput(tool, vals);
-    setOutput(prev => [...prev, { ts: new Date().toTimeString().slice(0,8) + '.000', msg: '─── Ejecutando ' + tool.toUpperCase() + ' ───', cls: 'cmd' }]);
-    let i = 0;
-    const tick = () => {
-      if (i >= lines.length) {
-        setRunning(false);
-        return;
+    setStructured(null);
+    setOutput(prev => [...prev,
+      { ts: nowTs(), msg: '─── ' + tool.label + ' ───', cls: 'cmd' },
+      { ts: nowTs(), msg: '$ ejecutando con ' + JSON.stringify(vals), cls: 'cmd' },
+    ]);
+
+    try {
+      let resp;
+      // Variante 1: tool tiene `api` → llamar a window.LBS_API.<api>(...)
+      if (tool.api) {
+        const args = tool.payload ? tool.payload(vals) : undefined;
+        const fn = window.LBS_API[tool.api];
+        if (!fn) throw new Error('API ' + tool.api + ' no disponible');
+        if (Array.isArray(args))      resp = await fn(...args);
+        else if (args !== undefined)  resp = await fn(args);
+        else                          resp = await fn();
+      } else {
+        // Variante 2: tool del diagnostic clásico
+        const url = tool.endpoint;
+        const body = tool.payload ? tool.payload(vals) : {};
+        if (tool.method === 'GET') {
+          resp = await fetch(`/api/diagnostic/${url}`, { credentials: 'same-origin' }).then(r => r.json());
+        } else {
+          resp = await window.LBS_API.diag(url, body);
+        }
       }
-      setOutput(prev => [...prev, lines[i]]);
-      i++;
-      setStreamIdx(x => x + 1);
-      setTimeout(tick, 60 + Math.random()*70);
-    };
-    setTimeout(tick, 250);
+
+      const ok = resp.success !== false;
+      // Texto plano si el endpoint lo trae
+      if (resp.output) appendLines(textToLines(resp.output));
+      if (resp.error) appendLines(['ERROR: ' + resp.error], 'err');
+      // Estructurado
+      setStructured({ parse: tool.parse, resp });
+      // Resumen final
+      appendLines([(ok ? '✓ ' : '✗ ') + tool.label + ' terminó'], ok ? 'ok' : 'warn');
+
+      // Historial
+      setHistory(prev => [{
+        tool: toolId, label: tool.label,
+        ts: new Date().toLocaleTimeString('es-MX', { hour12: false }),
+        ok, summary: _summary(tool.parse, resp),
+        vals: { ...vals },
+      }, ...prev].slice(0, 20));
+    } catch (e) {
+      appendLines(['ERROR: ' + e.message], 'err');
+    } finally {
+      setRunning(false);
+    }
   };
 
   const clear = () => {
-    setOutput([{ ts: new Date().toTimeString().slice(0,8) + '.000', msg: '$ clear', cls: 'cmd' }]);
+    setOutput([{ ts: nowTs(), msg: '$ clear', cls: 'cmd' }]);
+    setStructured(null);
   };
 
-  const quickActions = [
-    { name: 'Reiniciar UPS remotamente', desc: 'Envía REBOOT vía SNMP set', icon: 'bi-arrow-clockwise' },
-    { name: 'Apagar salida programada', desc: 'shutdown -h después de 60 s', icon: 'bi-power' },
-    { name: 'Calibrar batería',          desc: 'Calibración profunda · 4-6 h', icon: 'bi-battery-full' },
-    { name: 'Limpiar log de eventos',    desc: 'Borra historial interno',     icon: 'bi-eraser' },
-    { name: 'Exportar configuración',    desc: 'Backup .json del firmware',   icon: 'bi-download' },
-    { name: 'Actualizar firmware',       desc: 'Versión 02.14.0008 disponible', icon: 'bi-cloud-arrow-up' },
-  ];
+  const copyOutput = () => {
+    const text = output.map(l => `[${l.ts}] ${l.msg}`).join('\n');
+    navigator.clipboard.writeText(text).then(
+      () => appendLines(['📋 Output copiado al portapapeles'], 'dim'),
+      () => appendLines(['No se pudo copiar al portapapeles'], 'warn')
+    );
+  };
 
+  const downloadOutput = () => {
+    const text = output.map(l => `[${l.ts}] ${l.msg}`).join('\n');
+    const blob = new Blob([text], { type: 'text/plain' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `diag-${toolId}-${Date.now()}.txt`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const ipSuggestions = useMemoD(
+    () => Array.from(new Set(DEVICES.map(d => d.ip).filter(Boolean))).slice(0, 12),
+    [DEVICES],
+  );
+
+  // ── Render ──
   return (
     <div className="app-grid">
-      <Header page="diagnostico" crumbs={[{label:'Diagnóstico'},{label:device.name,bold:true}]} deviceName={device.name} />
-      <Sidebar activeId={device.id} onSelect={id => { setDevId(id); }} />
+      <Header page="diagnostico" crumbs={[{label:'Diagnóstico',bold:true}]} deviceName="" />
+      <Sidebar activeId="" onSelect={() => { window.location.href = (window.LBS_URLS && window.LBS_URLS.monitoreo) || 'monitoreo.html'; }} />
 
       <main className="app-main">
-        <div className="page-grid">
-          <section className="fleet-hero" style={{ gridTemplateColumns: '1.6fr repeat(4, 1fr)' }}>
-            <div className="fh-title">
-              <h1>Diagnóstico · {device.name}</h1>
-              <div className="sub">{device.model} · {device.ip} · {device.kva} kVA</div>
+        <div className="diag-grid">
+
+          {/* ──── Panel izquierdo: herramientas ──── */}
+          <aside className="diag-sidebar">
+            <div className="diag-sb-head">
+              <i className="bi bi-tools"></i> Herramientas
             </div>
-            <div className={"fh-stat " + (device.status === 'ok' ? 'ok' : device.status === 'warn' ? 'warn' : 'err')}>
-              <label>Estado</label>
-              <div className="v" style={{ fontSize: 16, letterSpacing: '0.10em' }}>
-                {device.status === 'ok' ? 'EN LÍNEA' : device.status === 'warn' ? 'ALARMA' : 'OFFLINE'}
+            {GROUPS.map(g => (
+              <div key={g} className="diag-sb-group">
+                <div className="diag-sb-group-title">{g}</div>
+                {Object.entries(TOOLS).filter(([_, c]) => c.group === g).map(([id, c]) => (
+                  <button
+                    key={id}
+                    className={"diag-sb-tool" + (toolId === id ? ' active' : '')}
+                    onClick={() => setToolId(id)}
+                  >
+                    <i className={"bi " + c.icon}></i>
+                    <span>{c.label}</span>
+                  </button>
+                ))}
               </div>
-              <div className="delta">{device.uptime}</div>
+            ))}
+          </aside>
+
+          {/* ──── Panel central: form + terminal + resultados ──── */}
+          <section className="diag-main">
+
+            {/* Cabecera */}
+            <div className="diag-tool-head">
+              <div>
+                <h2><i className={"bi " + tool.icon}></i> {tool.label}</h2>
+                <div className="dim">{tool.desc}</div>
+              </div>
+              <div className="diag-actions">
+                {tool.group === 'ZEROTIER' && (
+                  <button className="btn" onClick={() => setShowWizard(true)} title="Wizard bootstrap de sitio">
+                    <i className="bi bi-magic"></i> Wizard sitio
+                  </button>
+                )}
+                <button className="btn ghost" onClick={clear} disabled={running}>
+                  <i className="bi bi-eraser"></i> Limpiar
+                </button>
+                <button className="btn ghost" onClick={copyOutput} title="Copiar al portapapeles">
+                  <i className="bi bi-clipboard"></i>
+                </button>
+                <button className="btn ghost" onClick={downloadOutput} title="Descargar log">
+                  <i className="bi bi-download"></i>
+                </button>
+                <button className="btn" onClick={run} disabled={running}>
+                  {running
+                    ? <><i className="bi bi-arrow-repeat spin"></i> Ejecutando…</>
+                    : <><i className="bi bi-play-fill"></i> Ejecutar</>}
+                </button>
+              </div>
             </div>
-            <div className="fh-stat"><label>Carga</label><div className="v">{device.load}<small>%</small></div><div className="delta">de {device.kva} kVA</div></div>
-            <div className="fh-stat ok"><label>Batería</label><div className="v">{device.bat}<small>%</small></div><div className="delta up">{Math.round(device.bat/2.4)} min</div></div>
-            <div className="fh-stat"><label>Temp interna</label><div className="v">{device.temp.toFixed(1)}<small>°C</small></div><div className="delta">Sensor T1</div></div>
+
+            {/* Formulario */}
+            {tool.fields && tool.fields.length > 0 && (
+              <div className="diag-form">
+                {tool.fields.map(f => (
+                  <div key={f.name} className="diag-field">
+                    <label>{f.label}</label>
+                    {f.type === 'select' ? (
+                      <select value={vals[f.name]} onChange={e => setVals(v => ({ ...v, [f.name]: e.target.value }))}>
+                        {(f.options || []).map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+                      </select>
+                    ) : f.type === 'site-select' ? (
+                      <select value={vals[f.name] || ''} onChange={e => setVals(v => ({ ...v, [f.name]: e.target.value }))}>
+                        <option value="">— elegir sitio —</option>
+                        {SITES.map(s => <option key={s._raw_id || s.id} value={s._raw_id || s.id}>{s.name} ({s.numero_sitio})</option>)}
+                      </select>
+                    ) : (
+                      <input
+                        type={f.type === 'number' ? 'number' : 'text'}
+                        value={vals[f.name] || ''}
+                        onChange={e => setVals(v => ({ ...v, [f.name]: e.target.value }))}
+                        placeholder={f.def != null ? String(f.def) : ''}
+                        list={f.type === 'host' ? 'diag-ips' : (f.suggest ? `diag-${f.name}-list` : undefined)}
+                      />
+                    )}
+                    {f.suggest && (
+                      <datalist id={`diag-${f.name}-list`}>
+                        {f.suggest.map(s => <option key={s} value={s} />)}
+                      </datalist>
+                    )}
+                  </div>
+                ))}
+                <datalist id="diag-ips">
+                  {ipSuggestions.map(ip => <option key={ip} value={ip} />)}
+                </datalist>
+              </div>
+            )}
+
+            {/* Terminal */}
+            <div className="diag-terminal" ref={termRef}>
+              {output.map((l, i) => (
+                <div key={i} className={"diag-line " + (l.cls || '')}>
+                  <span className="ts">{l.ts}</span>
+                  <span className="msg">{l.msg}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Resultados estructurados */}
+            <ResultsView parse={structured && structured.parse} resp={structured && structured.resp} />
+
+            {/* Panel especializado de ZeroTier */}
+            {structured && typeof structured.parse === 'string' && structured.parse.startsWith('zt-') && window.ZeroTierPanel && (
+              <window.ZeroTierPanel
+                subtool={structured.parse.replace('zt-', '')}
+                vals={vals}
+                setVals={setVals}
+                run={run}
+                lastResp={structured.resp}
+                sitios={SITES}
+              />
+            )}
           </section>
 
-          <div className="diag-layout">
-            <aside className="diag-aside">
-              <section className="eng-panel">
-                <div className="eng-head">
-                  <span className="dot"></span>
-                  <h2>Identidad del equipo</h2>
-                  <span className="hdr-mono">SNMP · v2c</span>
-                </div>
-                <div className="eng-body" style={{ padding: '14px 16px' }}>
-                  <div className="diag-result">
-                    <div className="mini-block acc-cyan">
-                      <div className="mini-head"><span><i className="bi bi-tag"></i>MODELO</span></div>
-                      <div className="id-val lg">{device.model}<small>{device.kva} kVA · {device.topology || 'Online doble conversión'}</small></div>
-                    </div>
-                    <div className="mini-block acc-blue">
-                      <div className="mini-head"><span><i className="bi bi-router"></i>RED</span></div>
-                      <div className="id-val lg cyan">{device.ip}<small>SNMP v2c · puerto 161</small></div>
-                    </div>
-                    <div className="mini-block">
-                      <div className="mini-head"><span><i className="bi bi-cpu"></i>FIRMWARE</span></div>
-                      <div className="id-val">02.14.0008<small>Build 2024-09-12</small></div>
-                    </div>
-                    <div className="mini-block">
-                      <div className="mini-head"><span><i className="bi bi-upc"></i>SERIE</span></div>
-                      <div className="id-val">PX-2204-08812<small>Lote 2204</small></div>
-                    </div>
-                    <div className="mini-block">
-                      <div className="mini-head"><span><i className="bi bi-calendar-event"></i>INSTALACIÓN</span></div>
-                      <div className="id-val">2024-03-18<small>Sitio · {device.site || 'CDMX-01'}</small></div>
-                    </div>
-                    <div className="mini-block">
-                      <div className="mini-head"><span><i className="bi bi-clock-history"></i>UPTIME</span></div>
-                      <div className="id-val">{device.uptime}<small>Último reinicio · 14/09</small></div>
-                    </div>
-                  </div>
-                </div>
-              </section>
+          {/* ──── Panel derecho: contexto + historial ──── */}
+          <aside className="diag-right">
+            <div className="diag-ctx">
+              <h3><i className="bi bi-broadcast"></i> Flota</h3>
+              <div className="diag-ctx-row"><span>UPS totales</span><b>{DEVICES.length}</b></div>
+              <div className="diag-ctx-row"><span>En línea</span><b className="ok-text">{DEVICES.filter(d => d.status === 'ok').length}</b></div>
+              <div className="diag-ctx-row"><span>Con alarma</span><b className="warn-text">{DEVICES.filter(d => d.status === 'warn').length}</b></div>
+              <div className="diag-ctx-row"><span>Offline</span><b className="err-text">{DEVICES.filter(d => d.status === 'off').length}</b></div>
+            </div>
 
-              <section className="eng-panel">
-                <div className="eng-head">
-                  <span className="dot warn"></span>
-                  <h2>Acciones rápidas</h2>
-                  <span className="hdr-mono">REQUIERE 2FA</span>
-                </div>
-                <div className="eng-body" style={{ padding: '12px 14px' }}>
-                  <div className="diag-action-list">
-                    {quickActions.map((a, i) => (
-                      <button key={i} className="diag-action">
-                        <i className={"bi " + a.icon}></i>
-                        <div style={{ flex: 1 }}>
-                          <div className="name">{a.name}</div>
-                          <div className="desc">{a.desc}</div>
-                        </div>
-                        <i className="bi bi-chevron-right" style={{ color: 'var(--text-dim)' }}></i>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </section>
-            </aside>
-
-            <section className="diag-tools">
-              <section className="eng-panel">
-                <div className="eng-head">
-                  <span className="dot"></span>
-                  <h2>Herramientas</h2>
-                  <span className="hdr-mono">Console v3.2</span>
-                </div>
-                <div className="eng-body" style={{ padding: '14px 16px', gap: 12, display: 'flex', flexDirection: 'column' }}>
-                  <div className="tool-tabs">
-                    {TOOLS.map(t_ => (
-                      <button key={t_.id} className={"tool-tab " + (tool === t_.id ? 'active' : '')} onClick={() => setTool(t_.id)}>
-                        <i className={"bi " + t_.icon}></i>{t_.label}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="tool-form">
-                    {fields.map(f => (
-                      <div key={f.name} className="tool-field">
-                        <label>{f.label}</label>
-                        {f.type === 'select' ? (
-                          <select value={vals[f.name] || f.def} onChange={e => setVals({...vals, [f.name]: e.target.value})}>
-                            {f.opts.map(o => <option key={o} value={o}>{o}</option>)}
-                          </select>
-                        ) : (
-                          <input
-                            type={f.type}
-                            value={vals[f.name] === undefined ? f.def : vals[f.name]}
-                            onChange={e => setVals({...vals, [f.name]: e.target.value})}
-                          />
-                        )}
-                      </div>
-                    ))}
-                    <button className="tool-run" onClick={run} disabled={running}>
-                      <i className={"bi " + (running ? 'bi-arrow-repeat' : 'bi-play-fill')}></i>
-                      {running ? 'Ejecutando' : 'Ejecutar'}
-                    </button>
-                  </div>
-                </div>
-              </section>
-
-              <section className="eng-panel">
-                <div className="eng-head">
-                  <span className="dot ok"></span>
-                  <h2>Terminal</h2>
-                  <span className="hdr-mono">{device.name.toLowerCase()}@diag:~$</span>
-                  <button onClick={clear} style={{ marginLeft: 'auto', background:'transparent', border:'1px solid var(--border)', color:'var(--text-dim)', padding:'4px 10px', borderRadius:6, fontFamily:'var(--font-mono)', fontSize:10, letterSpacing:'0.16em', cursor:'pointer' }}>
-                    <i className="bi bi-eraser" style={{ marginRight: 5 }}></i>CLEAR
+            <div className="diag-ctx">
+              <h3><i className="bi bi-bookmark-star"></i> Atajos por UPS</h3>
+              <div className="diag-shortcuts">
+                {DEVICES.slice(0, 10).map(d => (
+                  <button key={d.id} className="diag-shortcut" onClick={() => {
+                    setVals(v => ({ ...v, ip: d.ip }));
+                  }}>
+                    <span className={"led " + d.status}></span>
+                    <div>
+                      <div className="name">{d.name}</div>
+                      <div className="ip">{d.ip}</div>
+                    </div>
                   </button>
-                </div>
-                <div className="eng-body" style={{ padding: 0 }}>
-                  <div className="terminal" ref={termRef} style={{ border: 'none', borderRadius: 0 }}>
-                    {output.map((l, i) => (
-                      <div className="ln" key={i}>
-                        <span className="ts">{l.ts}</span>
-                        <span className={"msg " + (l.cls || '')}>{l.msg || '\u00A0'}</span>
-                      </div>
-                    ))}
-                    {!running && <div className="ln"><span className="ts">{new Date().toTimeString().slice(0,8) + '.000'}</span><span className="msg cmd">$ <span className="cursor"></span></span></div>}
-                    {running && <div className="ln"><span className="ts"></span><span className="msg dim">… streaming output</span></div>}
+                ))}
+                {DEVICES.length === 0 && <div className="dim">Sin UPS registrados</div>}
+              </div>
+            </div>
+
+            <div className="diag-ctx">
+              <h3><i className="bi bi-clock-history"></i> Historial</h3>
+              {history.length === 0 && <div className="dim">— Sin ejecuciones aún —</div>}
+              <div className="diag-history">
+                {history.map((h, i) => (
+                  <div key={i} className={"diag-hist-row " + (h.ok ? 'ok' : 'err')}>
+                    <span className="ts">{h.ts}</span>
+                    <button className="lbl" onClick={() => { setToolId(h.tool); setVals(h.vals); }} title="Repetir">
+                      {h.label}
+                    </button>
+                    <span className="sum dim">{h.summary}</span>
                   </div>
-                </div>
-              </section>
-            </section>
-          </div>
+                ))}
+              </div>
+            </div>
+          </aside>
+
         </div>
       </main>
 
@@ -384,8 +814,44 @@ function DiagnosticoApp() {
             options={['#00b4ff', '#22e1ff', '#ff3df0', '#25f4a7', '#ffb000']} />
         </TweakSection>
       </TweaksPanel>
+
+      {importPrefill && typeof window.AddDeviceModal === 'function' && (
+        <window.AddDeviceModal
+          sitios={SITES}
+          prefill={importPrefill}
+          onClose={() => setImportPrefill(null)}
+          onSaved={() => {
+            setImportPrefill(null);
+            window.LBS_DATA && window.LBS_DATA.refresh();
+            window.LBS_TOAST && window.LBS_TOAST.success('UPS importado a la flota');
+            appendLines(['✓ UPS importado a la flota'], 'ok');
+          }}
+        />
+      )}
+      {showWizard && typeof window.ZTWizard === 'function' && (
+        <window.ZTWizard
+          onClose={() => setShowWizard(false)}
+          onFinished={() => {
+            window.LBS_DATA && window.LBS_DATA.refresh();
+            window.LBS_TOAST && window.LBS_TOAST.success('Bootstrap completado');
+          }}
+        />
+      )}
     </div>
   );
+}
+
+function _summary(parse, resp) {
+  if (!resp) return '';
+  if (parse === 'scan')     return `${(resp.hosts||[]).filter(h => (h.ports||[]).length).length} hosts`;
+  if (parse === 'snmpmass') return `${resp.total_encontrados||0} encontrados`;
+  if (parse === 'snmpwalk') return `${(resp.results||[]).length} OIDs`;
+  if (parse === 'autodetect') return resp.config && resp.config.success ? `${resp.config.version} · ${resp.config.community}` : 'sin respuesta';
+  if (parse === 'routers')  return `${resp.online||0} OK / ${resp.offline||0} OFF`;
+  if (parse === 'health')   return resp.resumen ? `${resp.resumen.online} OK · ${resp.resumen.offline} OFF` : '';
+  if (parse === 'port')     return resp.open ? 'abierto' : 'cerrado';
+  if (parse === 'zerotier') return resp.disponible ? 'conectado' : 'no instalado';
+  return resp.success === false ? 'fallo' : 'ok';
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<DiagnosticoApp />);

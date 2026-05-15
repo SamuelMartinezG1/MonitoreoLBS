@@ -43,6 +43,57 @@ function spark(base, amp, jitter = 0.4) {
   );
 }
 
+// ─── Helpers para datos reales ──────────────────────────────────────────────
+function _modeFromPowerSource(ps) {
+  const s = String(ps || '').toLowerCase();
+  if (s.includes('battery') || s.includes('bater')) return 'battery';
+  if (s.includes('bypass')) return 'bypass';
+  if (s.includes('fault') || s.includes('falla')) return 'fault';
+  return 'online';
+}
+
+function _liveValuesFrom(d) {
+  // d puede venir de Socket.IO ups_update.data o de /api/monitoreo/ultimo-estado
+  const f = (v, n = 1) => (v == null || isNaN(v)) ? '—' : Number(v).toFixed(n);
+  const vin   = d.voltaje_in_l1  ?? d.v_in   ?? 0;
+  const vout  = d.voltaje_out_l1 ?? d.v_out  ?? 0;
+  const load  = d.carga_pct       ?? d.load   ?? 0;
+  const bat   = d.bateria_pct     ?? d.bat    ?? 0;
+  const temp  = d.temperatura     ?? d.temp   ?? 0;
+  const fIn   = d.frecuencia_in   ?? d.freq_in  ?? 60;
+  const fOut  = d.frecuencia_out  ?? d.freq_out ?? 60;
+  const iOut1 = d.corriente_out_l1 ?? d.i_out  ?? 0;
+  const batV  = d.voltaje_bateria  ?? d.bat_v  ?? 0;
+  const remain = d.battery_remain_time ?? 0;
+  return {
+    mode_label: 'EN LÍNEA',
+    v_in:    f(vin, 1),
+    v_in_l2: f(d.voltaje_in_l2 ?? 0, 1),
+    v_in_l3: f(d.voltaje_in_l3 ?? 0, 1),
+    v_out:   f(vout, 1),
+    v_out_l2: f(d.voltaje_out_l2 ?? 0, 1),
+    v_out_l3: f(d.voltaje_out_l3 ?? 0, 1),
+    freq_in:  f(fIn, 2),
+    freq_out: f(fOut, 2),
+    i_in:  '—',
+    i_out: f(iOut1, 1),
+    thd_in: '—', thd_out: '—',
+    pf: f(d.power_factor ?? 0.99, 2),
+    eff_rect: '—', eff_inv: '—', efficiency: '—',
+    dc_v: '—', dc_v_rect: '—', dc_i: '—',
+    bat_v: f(batV, 1),
+    bat_i: '—',
+    bat_pct: Math.round(Number(bat) || 0),
+    bat_temp: f(temp, 1),
+    load_pct: Math.round(Number(load) || 0),
+    load_kw:  f(d.active_power ?? 0, 2),
+    load_kva: f(d.apparent_power ?? 0, 2),
+    runtime:  remain ? `${Math.round(remain)}m` : '—',
+    temp: f(temp, 1),
+    amb_temp: '—', amb_humidity: '—',
+  };
+}
+
 // ─── Main component ──────────────────────────────────────────────────────────
 function App() {
   const [t, setTweak] = useTweaks(window.TWEAK_DEFAULTS);
@@ -56,21 +107,69 @@ function App() {
     document.documentElement.dataset.dense = t.denseLayout ? '1' : '0';
   }, [accent, t.panelStyle, t.denseLayout]);
 
-  const [activeDevice, setActiveDevice] = useState({
-    id: 'u1', name: 'UPS-03-01', ip: '192.168.3.10', model: 'EATON 9PX 6kVA',
-  });
+  // ── Datos en vivo desde DataLayer ──
+  const [, setTickGlobal] = useState(0);
+  useEffect(() => {
+    const fn = () => setTickGlobal(x => x + 1);
+    window.addEventListener('lbs:data-refresh', fn);
+    return () => window.removeEventListener('lbs:data-refresh', fn);
+  }, []);
 
-  const [mode, setMode] = useState('online'); // online | battery | bypass | fault
+  // Selecciona dispositivo activo (por query ?dev=ID, sino primero disponible)
+  const urlDev = (new URLSearchParams(window.location.search)).get('dev');
+  const fleetDevices = (window.MOCK && window.MOCK.DEVICES) || [];
+  const firstDevice = fleetDevices[0] || { id: 0, name: 'Sin UPS', ip: '—', model: '—', kva: 0 };
+  const matched = urlDev ? fleetDevices.find(d => String(d.id) === String(urlDev)) : null;
+  const activeDeviceFromFleet = matched || firstDevice;
+
+  const [activeDevice, setActiveDevice] = useState(activeDeviceFromFleet);
+  // Sincroniza activeDevice si el fleet cambia y aún no hay selección manual
+  useEffect(() => {
+    if (!activeDevice.id && activeDeviceFromFleet.id) {
+      setActiveDevice(activeDeviceFromFleet);
+    }
+  }, [activeDeviceFromFleet.id]);
+
+  const [mode, setMode] = useState('online'); // online | battery | bypass | fault | demo
   const [tick, setTick] = useState(0);
 
-  // Live tick every 2s
+  // Live tick — sólo para sparklines cosméticas
   useEffect(() => {
     const id = setInterval(() => setTick(x => x + 1), 2000);
     return () => clearInterval(id);
   }, []);
 
+  // ── Socket.IO: datos en vivo del UPS activo ──
+  const [liveData, setLiveData] = useState(null);
+  useEffect(() => {
+    if (!activeDevice.id || !window.io) return;
+    // Carga inicial: último estado conocido
+    if (window.LBS_API) {
+      window.LBS_API.getUltimoEstado(activeDevice.id).then(r => {
+        if (r && r.data) setLiveData(r.data);
+      }).catch(() => {});
+    }
+    // Conecta al namespace /monitor
+    const sock = window.io('/monitor', { transports: ['websocket', 'polling'] });
+    const onUpdate = (payload) => {
+      if (!payload || String(payload.id) !== String(activeDevice.id)) return;
+      if (payload.data) setLiveData(payload.data);
+      if (payload.status === 'offline') setMode('fault');
+      else if (payload.data && payload.data.power_mode) setMode(_modeFromPowerSource(payload.data.power_mode));
+    };
+    sock.on('ups_update', onUpdate);
+    // ups_update se emite en namespace default, no /monitor — escuchamos en ambos
+    const sockDefault = window.io({ transports: ['websocket', 'polling'] });
+    sockDefault.on('ups_update', onUpdate);
+    return () => { sock.close(); sockDefault.close(); };
+  }, [activeDevice.id]);
+
   // Compute current values based on mode + tick
   const values = useMemo(() => {
+    // Si tenemos datos reales por Socket.IO o por la API, usarlos
+    if (liveData) return _liveValuesFrom(liveData);
+
+    // Fallback: simulación cosmética cuando aún no llegan datos
     const j = (a) => a + (Math.random() - 0.5) * 0.6;
     const baseOnline = {
       mode: 'online', mode_label: 'LÍNEA',
@@ -168,12 +267,58 @@ function App() {
     return base;
   }, [mode, activeDevice.ip, values.bat_pct, values.bat_v, values.mode_label]);
 
-  // Time series for chart — generate once + memo
-  const series = useMemo(() => ({
+  // Time series for chart — datos REALES desde ups_chart_history (fallback sintético)
+  const [series, setSeries] = useState({
     voltage: genSeries('voltage'),
     load:    genSeries('load'),
     battery: genSeries('battery'),
-  }), [activeDevice.id]);
+  });
+
+  useEffect(() => {
+    if (!activeDevice.id || !window.LBS_API) return;
+    let cancelled = false;
+    window.LBS_API.getHistorial(activeDevice.id, 6).then(rows => {
+      if (cancelled) return;
+      if (!Array.isArray(rows) || rows.length === 0) return;  // mantén el fallback
+      const fmt = ts => {
+        try { const d = new Date(ts); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; }
+        catch (_) { return ''; }
+      };
+      const real = {
+        voltage: rows.map(r => ({
+          t:       fmt(r.timestamp),
+          v_in:    Number(r.voltaje_in_l1  || 0),
+          v_in_l2: Number(r.voltaje_in_l2  || 0),
+          v_in_l3: Number(r.voltaje_in_l3  || 0),
+          v_out:   Number(r.voltaje_out_l1 || 0),
+        })),
+        load: rows.map(r => ({
+          t:        fmt(r.timestamp),
+          load_pct: Number(r.carga_pct || 0),
+          i_out:    Number(r.corriente_out_l1 || 0),
+        })),
+        battery: rows.map(r => ({
+          t:       fmt(r.timestamp),
+          bat_pct: Number(r.bateria_pct || 0),
+          temp:    Number(r.temperatura || 0),
+        })),
+      };
+      setSeries(real);
+    }).catch(() => {});
+    // Refresca histórico cada 30s
+    const id = setInterval(() => {
+      window.LBS_API.getHistorial(activeDevice.id, 6).then(rows => {
+        if (cancelled || !Array.isArray(rows) || rows.length === 0) return;
+        const fmt = ts => { try { const d = new Date(ts); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; } catch (_) { return ''; } };
+        setSeries({
+          voltage: rows.map(r => ({ t: fmt(r.timestamp), v_in: +r.voltaje_in_l1||0, v_in_l2: +r.voltaje_in_l2||0, v_in_l3: +r.voltaje_in_l3||0, v_out: +r.voltaje_out_l1||0 })),
+          load:    rows.map(r => ({ t: fmt(r.timestamp), load_pct: +r.carga_pct||0, i_out: +r.corriente_out_l1||0 })),
+          battery: rows.map(r => ({ t: fmt(r.timestamp), bat_pct: +r.bateria_pct||0, temp: +r.temperatura||0 })),
+        });
+      }).catch(() => {});
+    }, 30000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [activeDevice.id]);
 
   const phaseMode = t.phaseMode || 'single';
 

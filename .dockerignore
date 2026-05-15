@@ -1,0 +1,51 @@
+# ============================================================================
+# .dockerignore — qué se EXCLUYE del build context
+# ============================================================================
+
+# --- Cache Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Entornos virtuales ---
+.venv/
+venv/
+env/
+
+# --- Secrets y configuración local ---
+.env
+.env.*
+!.env.example
+
+# --- Datos persistentes / artefactos locales ---
+pgdata/
+backups/
+*.sqlite3
+*.log
+
+# --- Git / IDE / SO ---
+.git/
+.gitignore
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- Documentación que no necesita el runtime ---
+*.md
+docs/
+
+# --- Scripts (los necesarios ya quedan en imagen vía COPY explícito) ---
+scripts/
+
+# --- Docker meta ---
+Dockerfile*
+.dockerignore
+docker-compose*.yml
+
+# --- CI ---
+.github/
+.gitlab-ci.yml

@@ -1,0 +1,281 @@
+/* responsive.css — Responsive total (móvil + iPad + desktop).
+   Se carga AL FINAL para hacer override de los grids fijos.
+
+   Breakpoints:
+     · ≤1024px  tablet / iPad (portrait y landscape chico)
+     · ≤768px   tablet chico / móvil grande
+     · ≤560px   móvil
+*/
+
+/* ════════════════════════════════════════════════════════════════
+   TABLET / iPad  (≤ 1024px)
+   ════════════════════════════════════════════════════════════════ */
+@media (max-width: 1024px) {
+
+  /* ---- App grid: sidebar pasa a drawer off-canvas ---- */
+  .app-grid {
+    grid-template-columns: 1fr !important;
+    grid-template-areas: "header" "main" !important;
+  }
+
+  .scada-sidebar {
+    display: flex !important;
+    flex-direction: column;
+    position: fixed !important;
+    top: 0; left: 0; bottom: 0;
+    width: 280px !important;
+    min-width: 280px !important;
+    z-index: 200;
+    transform: translateX(-105%);
+    transition: transform 0.28s cubic-bezier(.4,0,.2,1);
+    box-shadow: 0 0 48px rgba(0,0,0,0.6);
+    background: var(--bg, #0f1322);
+    overflow-y: auto;
+    padding-top: 56px;     /* deja espacio para el botón cerrar */
+  }
+  html[data-drawer="open"] .scada-sidebar {
+    transform: translateX(0);
+  }
+  /* La versión colapsada no aplica en drawer */
+  .scada-sidebar.scada-sidebar-collapsed {
+    width: 280px !important;
+    min-width: 280px !important;
+    padding-top: 56px !important;
+    align-items: stretch;
+  }
+  .scada-sidebar.scada-sidebar-collapsed .sb-expand,
+  .scada-sidebar.scada-sidebar-collapsed .sb-collapsed-stats { display: none; }
+
+  /* Overlay detrás del drawer */
+  #lbs-drawer-ov {
+    position: fixed; inset: 0;
+    background: rgba(3,6,14,0.66);
+    backdrop-filter: blur(2px);
+    z-index: 199;
+    opacity: 0; visibility: hidden;
+    transition: opacity 0.24s ease, visibility 0.24s ease;
+  }
+  html[data-drawer="open"] #lbs-drawer-ov {
+    opacity: 1; visibility: visible;
+  }
+
+  /* Botón hamburguesa */
+  #lbs-burger {
+    display: flex !important;
+  }
+
+  /* ---- Header compacto ---- */
+  .app-header {
+    gap: 12px;
+    padding: 0 14px 0 60px;   /* deja hueco para el burger */
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .app-header::-webkit-scrollbar { display: none; }
+  .app-header .crumb { display: none; }
+  .header-tools .btn span,
+  .header-tools a.btn span { display: none; }   /* solo iconos */
+  .header-tools .btn,
+  .header-tools a.btn { padding: 8px 10px; }
+  .utc-clock { display: none; }
+
+  /* ---- Grids principales ---- */
+  .fleet-hero,
+  .telemetry-hero {
+    grid-template-columns: 1fr 1fr !important;
+    grid-auto-rows: auto;
+  }
+  .fleet-hero .fh-title,
+  .telemetry-hero .th-id { grid-column: 1 / -1 !important; }
+
+  .sites-grid { grid-template-columns: 1fr 1fr !important; }
+  .panels-row,
+  .panels-row.triple { grid-template-columns: 1fr !important; }
+  .trio-row { grid-template-columns: 1fr !important; }
+  .trio-row > .ups-diagram-panel { grid-column: auto !important; order: 0 !important; }
+
+  /* Diagnóstico: oculta panel derecho, sidebar de herramientas arriba */
+  .diag-grid { grid-template-columns: 1fr !important; height: auto !important; }
+  .diag-right { display: none !important; }
+  .diag-sidebar {
+    flex-direction: row !important;
+    flex-wrap: wrap;
+    overflow-x: auto;
+    max-height: 160px;
+  }
+
+  /* Tablas con scroll horizontal */
+  .inv-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .inv-table { min-width: 760px; }
+
+  /* Modales más anchos */
+  .lbs-modal,
+  .lbs-modal-wide { width: min(96vw, 720px) !important; }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   MÓVIL grande / tablet chico  (≤ 768px)
+   ════════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+
+  .app-main { padding: 10px 12px 24px; }
+
+  .fleet-hero,
+  .telemetry-hero { grid-template-columns: 1fr !important; }
+  .sites-grid { grid-template-columns: 1fr !important; }
+
+  /* KPIs en fila horizontal scrolleable para que no ocupen toda la pantalla */
+  .fleet-hero { gap: 10px; }
+  .fh-stat, .th-stat { padding: 12px 14px; }
+
+  /* Toolbar de inventario: apilar */
+  .inv-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .inv-toolbar .search-input { width: 100%; }
+  .inv-toolbar .inv-pill-group { overflow-x: auto; }
+  .inv-toolbar .btn { width: 100%; justify-content: center; }
+  .grab-select { min-width: 0; width: 100%; }
+
+  /* Modales casi full-screen */
+  .lbs-modal,
+  .lbs-modal-wide {
+    width: 96vw !important;
+    max-height: 92vh;
+  }
+  .lbs-grid-2 { grid-template-columns: 1fr !important; }
+
+  /* Command palette */
+  .lbs-cp { width: 94vw; }
+  .lbs-cp-foot { gap: 10px; flex-wrap: wrap; }
+
+  /* Onboarding */
+  .lbs-onboard { padding: 24px 18px 20px; }
+  .lbs-onboard-step { grid-template-columns: 36px 1fr; gap: 12px; padding: 12px; }
+  .lbs-onboard-footer { flex-direction: column; align-items: stretch; gap: 12px; }
+  .lbs-onboard-hero h1 { font-size: 20px; }
+
+  /* Diagnóstico terminal más alto */
+  .diag-terminal { max-height: 40vh; }
+
+  /* SCADA: hero apilado */
+  .telemetry-hero .th-id .meta { flex-wrap: wrap; gap: 6px; }
+
+  /* Tweaks panel: a pantalla completa abajo */
+  .tweaks-panel,
+  #tweaksPanel {
+    width: 100vw !important;
+    max-width: 100vw !important;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   MÓVIL  (≤ 560px)
+   ════════════════════════════════════════════════════════════════ */
+@media (max-width: 560px) {
+
+  :root { --gap: 10px; }
+
+  .app-header { padding: 0 10px 0 56px; gap: 8px; }
+  .brand .brand-meta { display: none; }       /* solo el logo */
+  .header-tools { gap: 4px; }
+  .header-tools .btn,
+  .header-tools a.btn { padding: 7px 9px; font-size: 11px; }
+
+  .user-chip span { display: none; }          /* solo avatar */
+
+  /* Hero: tarjetas full width apiladas */
+  .fleet-hero h1,
+  .telemetry-hero h1 { font-size: 18px; }
+  .fh-stat .v, .th-stat .v { font-size: 22px; }
+
+  /* Tablas: convertir a "cards" apiladas */
+  .inv-table thead { display: none; }
+  .inv-table, .inv-table tbody, .inv-table tr, .inv-table td { display: block; width: 100%; }
+  .inv-table { min-width: 0; }
+  .inv-table tr {
+    margin-bottom: 10px;
+    border: 1px solid var(--border, #232a44);
+    border-radius: 10px;
+    padding: 8px 10px;
+    background: rgba(255,255,255,0.015);
+  }
+  .inv-table tr.group-header {
+    background: rgba(0,180,255,0.06);
+    border-color: rgba(0,180,255,0.25);
+  }
+  .inv-table td {
+    padding: 5px 4px;
+    text-align: left !important;
+    border: 0 !important;
+  }
+  .inv-table td::before {
+    content: attr(data-label);
+    display: inline-block;
+    min-width: 96px;
+    color: var(--text-dim, #98a1bf);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  /* Login: el card a casi todo el ancho */
+  .login-card {
+    width: 94vw !important;
+    padding: 26px 20px !important;
+  }
+  .login-topbar .top-mono { display: none; }
+  .login-foot { font-size: 9px; }
+
+  /* Diag terminal full */
+  .diag-terminal { font-size: 11px; max-height: 38vh; }
+  .diag-result-block { padding: 10px; }
+  .diag-table { font-size: 11px; }
+
+  /* Toast más angostos */
+  #lbs-toast-root { left: 10px; right: 10px; top: 12px; }
+  .lbs-toast { min-width: 0; max-width: none; width: 100%; }
+
+  /* Splash logo más chico */
+  #lbs-splash .lg { width: 110px; }
+  #lbs-splash .ring  { width: 180px; height: 180px; }
+  #lbs-splash .ring.r2 { width: 230px; height: 230px; }
+}
+
+/* ════════════════════════════════════════════════════════════════
+   Burger + drawer overlay (ocultos en desktop por defecto)
+   ════════════════════════════════════════════════════════════════ */
+#lbs-burger {
+  display: none;
+  position: fixed;
+  top: 12px; left: 12px;
+  z-index: 210;
+  width: 40px; height: 40px;
+  align-items: center; justify-content: center;
+  background: rgba(8,14,32,0.92);
+  border: 1px solid var(--border, #232a44);
+  border-radius: 10px;
+  color: var(--text-main, #e6e9f5);
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  transition: background 0.15s, border-color 0.15s;
+}
+#lbs-burger:hover { border-color: var(--accent, #00b4ff); }
+#lbs-burger i { font-size: 18px; }
+#lbs-burger .x { display: none; }
+html[data-drawer="open"] #lbs-burger .bars { display: none; }
+html[data-drawer="open"] #lbs-burger .x    { display: inline; }
+
+/* En desktop nunca se ven */
+@media (min-width: 1025px) {
+  #lbs-burger, #lbs-drawer-ov { display: none !important; }
+}
+
+/* Pantallas táctiles: targets mínimos 40px */
+@media (pointer: coarse) {
+  .btn, .sb-iconbtn, .actions button, .actions a,
+  .diag-sb-tool, .inv-pill { min-height: 40px; }
+  input, select, textarea { font-size: 16px; }  /* evita zoom iOS */
+}

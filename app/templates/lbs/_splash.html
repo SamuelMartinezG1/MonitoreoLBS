@@ -1,0 +1,117 @@
+{# Splash de transición. CSS+JS inline (NO depende de assets externos para
+   poder pintarse antes de que Babel transpile los JSX, que es lo que tarda
+   ~500-900 ms). Se auto-oculta cuando React monta #root, y se re-muestra al
+   navegar a links internos para cubrir el reload. #}
+<style>
+  #lbs-splash{
+    position:fixed;inset:0;z-index:99999;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px;
+    background:radial-gradient(ellipse at 50% 40%, #0e1426 0%, #070a14 70%);
+    transition:opacity .42s ease, visibility .42s ease;
+    font-family:'Sora','Manrope',system-ui,sans-serif;
+  }
+  #lbs-splash.hide{opacity:0;visibility:hidden;pointer-events:none;}
+  #lbs-splash .lg{
+    width:148px;height:auto;
+    filter:drop-shadow(0 0 22px rgba(0,180,255,.55));
+    animation:lbs-sp-pulse 1.5s ease-in-out infinite;
+  }
+  #lbs-splash .lg path{fill:#eef4ff;}
+  #lbs-splash .ring{
+    position:absolute;width:240px;height:240px;border-radius:50%;
+    border:1.5px solid transparent;
+    border-top-color:rgba(0,180,255,.65);
+    border-right-color:rgba(0,180,255,.20);
+    animation:lbs-sp-spin 1.05s linear infinite;
+  }
+  #lbs-splash .ring.r2{
+    width:300px;height:300px;
+    border-top-color:rgba(34,225,255,.30);
+    animation-duration:1.7s;animation-direction:reverse;
+  }
+  #lbs-splash .bar{
+    width:200px;height:2px;border-radius:2px;
+    background:rgba(255,255,255,.07);overflow:hidden;position:relative;
+  }
+  #lbs-splash .bar i{
+    position:absolute;left:-40%;top:0;height:100%;width:40%;
+    background:linear-gradient(90deg,transparent,#00b4ff,transparent);
+    animation:lbs-sp-bar 1.05s ease-in-out infinite;
+  }
+  #lbs-splash .txt{
+    font-family:'JetBrains Mono',monospace;
+    font-size:10px;letter-spacing:.34em;color:#5d6786;text-transform:uppercase;
+  }
+  @keyframes lbs-sp-pulse{
+    0%,100%{transform:scale(1);filter:drop-shadow(0 0 18px rgba(0,180,255,.45));}
+    50%{transform:scale(1.05);filter:drop-shadow(0 0 30px rgba(0,180,255,.75));}
+  }
+  @keyframes lbs-sp-spin{to{transform:rotate(360deg);}}
+  @keyframes lbs-sp-bar{
+    0%{left:-40%;}60%{left:100%;}100%{left:100%;}
+  }
+  @media (prefers-reduced-motion: reduce){
+    #lbs-splash .lg,#lbs-splash .ring,#lbs-splash .bar i{animation:none;}
+  }
+</style>
+
+<div id="lbs-splash" role="status" aria-label="Cargando">
+  <div style="position:relative;display:flex;align-items:center;justify-content:center;">
+    <span class="ring"></span>
+    <span class="ring r2"></span>
+    <svg class="lg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 190 60" aria-hidden="true">
+      <path d="M1,59.24V.76h12.55v45.93h37.8v12.55H1Z"></path>
+      <path d="M57.65,59.24V.76h43.03c11.82,0,19.71,5.15,19.71,15.28,0,7.08-3.46,10.54-6.76,12.07,4.42,1.85,7.88,6.43,7.88,12.55,0,11.58-7.8,18.58-19.3,18.58h-44.56ZM77.44,34.46v-9.89h23.49c4.58,0,6.68-1.85,6.68-5.63,0-4.34-3.22-5.71-8.61-5.71h-28.8v33.54h29.76c5.31,0,8.77-1.93,8.77-6.19,0-3.86-2.41-6.11-6.92-6.11h-24.37Z"></path>
+      <path d="M125.94,59.24v-12.55h44.16c4.5,0,7.08-2.33,7.08-6.03,0-3.94-2.57-6.19-7.08-6.19h-26.46c-11.5,0-18.58-6.92-18.58-16.81S131.65.76,143.8.76h42.31v12.55h-42.31c-3.54,0-5.71,2.01-5.71,5.63s2.25,5.63,5.71,5.63h26.3c12.31,0,18.9,5.47,18.9,17.13,0,10.05-6.19,17.53-18.9,17.53h-44.16Z"></path>
+    </svg>
+  </div>
+  <div class="bar"><i></i></div>
+  <div class="txt">LBS&nbsp;·&nbsp;MONITOR</div>
+</div>
+
+<script>
+(function(){
+  var sp = document.getElementById('lbs-splash');
+  if(!sp) return;
+  var done = false;
+  function hide(){
+    if(done) return; done = true;
+    sp.classList.add('hide');
+    setTimeout(function(){ try{ sp.remove(); }catch(e){} }, 480);
+  }
+  // 1. Ocultar cuando React monte algo dentro de #root
+  function watchRoot(){
+    var root = document.getElementById('root');
+    if(!root){ return setTimeout(watchRoot, 50); }
+    if(root.children.length){ return setTimeout(hide, 120); }
+    var mo = new MutationObserver(function(){
+      if(root.children.length){ mo.disconnect(); setTimeout(hide, 120); }
+    });
+    mo.observe(root, { childList:true });
+  }
+  watchRoot();
+  // 2. Fallback duro: nunca dejar el splash colgado más de 8 s
+  setTimeout(hide, 8000);
+
+  // 3. Re-mostrar el splash al navegar a links internos (cubre la pantalla
+  //    blanca del reload + recompilación de Babel de la página destino).
+  document.addEventListener('click', function(e){
+    var a = e.target.closest && e.target.closest('a');
+    if(!a) return;
+    var href = a.getAttribute('href') || '';
+    if(a.target === '_blank' || a.hasAttribute('download')) return;
+    if(e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
+    // solo rutas internas same-origin
+    if(href && href[0] === '/' && href.indexOf('//') !== 0){
+      done = false;
+      sp.classList.remove('hide');
+      sp.style.opacity = '1';
+      sp.style.visibility = 'visible';
+    }
+  }, true);
+  // 4. Al volver con back/forward, no dejar el splash pegado
+  window.addEventListener('pageshow', function(ev){
+    if(ev.persisted){ done = true; sp.classList.add('hide'); }
+  });
+})();
+</script>

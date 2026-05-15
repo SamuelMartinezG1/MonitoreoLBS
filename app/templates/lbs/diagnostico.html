@@ -8,14 +8,26 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/panels.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/layout.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/pages.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/modals.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/admin.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/diagnostico.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/responsive.css') }}" />
   {% include 'lbs/_react.html' %}
 </head>
 <body>
+  {% include 'lbs/_splash.html' %}
+  {% include 'lbs/_mobile.html' %}
   <div id="root"></div>
+  <div id="lbs-toast-root"></div>
   <script>window.LBS_URLS = {{ urls|tojson }};</script>
+  <script type="text/babel" src="{{ url_for('static', filename='lbs/components/Toast.jsx') }}"></script>
+  <script type="text/babel" src="{{ url_for('static', filename='lbs/components/CommandPalette.jsx') }}"></script>
   <script type="text/babel" src="{{ url_for('static', filename='lbs/components/Shell.jsx') }}"></script>
   <script type="text/babel" src="{{ url_for('static', filename='lbs/components/Sidebar.jsx') }}"></script>
   <script type="text/babel" src="{{ url_for('static', filename='lbs/components/MockData.jsx') }}"></script>
+  <script type="text/babel" src="{{ url_for('static', filename='lbs/components/Modals.jsx') }}"></script>
+  <script type="text/babel" src="{{ url_for('static', filename='lbs/components/ZeroTierPanel.jsx') }}"></script>
+  <script type="text/babel" src="{{ url_for('static', filename='lbs/components/ZTWizard.jsx') }}"></script>
   <script type="text/babel" src="{{ url_for('static', filename='lbs/components/tweaks-panel.jsx') }}"></script>
   <script type="text/babel" src="{{ url_for('static', filename='lbs/components/DiagnosticoApp.jsx') }}"></script>
 </body>

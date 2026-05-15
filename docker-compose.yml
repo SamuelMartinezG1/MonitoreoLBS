@@ -1,61 +1,105 @@
-# docker-compose.yml — MonitoreoLBS (Servicio de Monitoreo UPS)
-# Stack 100% PostgreSQL (sin InfluxDB).
+# ============================================================================
+# docker-compose.yml — LBS Monitor (portal + DB + tunnel opcional)
+# ============================================================================
+# Stack 100% PostgreSQL. El portal sirve el nuevo diseño y los endpoints JSON.
 #
-# Servicios:
-#   db          → PostgreSQL 15 (config + telemetría + series de tiempo)
-#   monitor     → Servicio Python (SNMP + Modbus + Socket.IO)
-#   cloudflared → Cloudflare Tunnel (perfil opcional `tunnel`)
+# Servicios
+#   db        → PostgreSQL 15 (config + telemetría)
+#   portal    → Flask + Socket.IO + frontend (diseño Claude Design)
+#   tunnel    → Cloudflare Tunnel (opt-in con --profile tunnel)
 #
-# Levantar:    docker compose up -d
-# Logs:        docker compose logs -f monitor
-# Reconstruir: docker compose build --no-cache monitor
+# Comandos comunes
+#   docker compose up -d                          # arranca db + portal
+#   docker compose --profile tunnel up -d         # añade Cloudflare Tunnel
+#   docker compose logs -f portal                 # logs en vivo
+#   docker compose build --no-cache portal        # rebuild de la imagen
+#   docker compose down                           # parar (mantiene volúmenes)
+#   docker compose down -v                        # parar y BORRAR datos
 #
-# Requiere un archivo .env (ver .env.example).
+# Requiere `.env` (basado en `.env.example`).
+# ============================================================================
+
+x-restart-policy: &restart unless-stopped
 
 services:
+
+  # ------------------------------------------------------------------ #
+  # PostgreSQL                                                          #
   # ------------------------------------------------------------------ #
   db:
     image: postgres:15-alpine
-    container_name: ups-monitor-db
-    restart: unless-stopped
+    container_name: ${PROJECT_NAME:-lbs}-db
+    restart: *restart
     environment:
-      POSTGRES_USER: ${DB_USER:-guia_app}
+      POSTGRES_USER:     ${DB_USER:-guia_app}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-cambiame123}
-      POSTGRES_DB: ${DB_NAME:-guia_instalacion}
+      POSTGRES_DB:       ${DB_NAME:-guia_instalacion}
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Las migraciones .sql se aplican en orden alfabético la PRIMERA vez
       # que arranca el contenedor (cuando pgdata está vacío).
       - ./migrations:/docker-entrypoint-initdb.d:ro
     ports:
-      - "127.0.0.1:5432:5432"
-    networks: [monitor-net]
+      # Expuesto solo en localhost para que la admin externa pueda conectar.
+      - "${DB_EXTERNAL_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-guia_app} -d ${DB_NAME:-guia_instalacion}"]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks: [lbs-net]
 
   # ------------------------------------------------------------------ #
-  # Servicio principal de monitoreo
-  # network_mode: host  →  necesario para alcanzar UPS por SNMP/Modbus
-  #                       a través de ZeroTier u otra red overlay del host.
-  monitor:
-    build: .
-    container_name: ups-monitor
-    restart: unless-stopped
+  # Portal (Flask + Socket.IO + frontend nuevo)                         #
+  # ------------------------------------------------------------------ #
+  # `network_mode: host` es indispensable para que SNMP/Modbus puedan
+  # alcanzar UPS en ZeroTier u otra red overlay del host. Con host mode
+  # el portal NO usa `lbs-net`; las apps deben hablar con localhost.
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${PORTAL_IMAGE:-lbs/portal:latest}
+    container_name: ${PROJECT_NAME:-lbs}-portal
+    restart: *restart
     network_mode: host
     depends_on:
       db: { condition: service_healthy }
+    volumes:
+      # ZeroTier authtoken (opcional): permite que /api/zerotier/* hable con el
+      # demonio del host. Si no existe el archivo, ZT no estará disponible.
+      # Setup en host (una vez):
+      #   sudo install -d -m 0755 /etc/lbs
+      #   sudo install -m 0644 /var/lib/zerotier-one/authtoken.secret /etc/lbs/zerotier-token
+      - /etc/lbs/zerotier-token:/etc/lbs/zerotier-token:ro
     environment:
-      DATABASE_URL: postgresql://${DB_USER:-guia_app}:${DB_PASSWORD:-cambiame123}@127.0.0.1:5432/${DB_NAME:-guia_instalacion}
-      SECRET_KEY:   ${SECRET_KEY:-change-me}
-      APP_HOST:     0.0.0.0
-      APP_PORT:     ${APP_PORT:-5000}
-      POLL_INTERVAL: ${POLL_INTERVAL:-2}
-      LOG_LEVEL:    ${LOG_LEVEL:-INFO}
+      DATABASE_URL:           postgresql://${DB_USER:-guia_app}:${DB_PASSWORD:-cambiame123}@127.0.0.1:${DB_EXTERNAL_PORT:-5432}/${DB_NAME:-guia_instalacion}
+      SECRET_KEY:             ${SECRET_KEY:?SECRET_KEY required in .env}
+      APP_HOST:               0.0.0.0
+      APP_PORT:               ${APP_PORT:-5000}
+      LOG_LEVEL:              ${LOG_LEVEL:-INFO}
+      # --- Polling ---
+      POLL_INTERVAL:           ${POLL_INTERVAL:-2}
+      MODBUS_POLL_INTERVAL:    ${MODBUS_POLL_INTERVAL:-2}
+      MODBUS_POLL_WORKERS:     ${MODBUS_POLL_WORKERS:-32}
+      MODBUS_STATUS_INTERVAL_S:  ${MODBUS_STATUS_INTERVAL_S:-6}
+      MODBUS_ENV_INTERVAL_S:     ${MODBUS_ENV_INTERVAL_S:-30}
+      MODBUS_MODULES_INTERVAL_S: ${MODBUS_MODULES_INTERVAL_S:-10}
+      # --- Sample / cache ---
+      METRICS_SAMPLE_INTERVAL_S: ${METRICS_SAMPLE_INTERVAL_S:-30}
+      HISTORY_SAMPLE_INTERVAL_S: ${HISTORY_SAMPLE_INTERVAL_S:-30}
+      SNMP_CLIENT_TTL_S:         ${SNMP_CLIENT_TTL_S:-300}
+      # --- Retención ---
       HISTORY_RETENTION_DAYS: ${HISTORY_RETENTION_DAYS:-30}
       METRICS_RETENTION_DAYS: ${METRICS_RETENTION_DAYS:-90}
+      # --- Pools ---
+      DB_POOL_MIN:            ${DB_POOL_MIN:-2}
+      DB_POOL_MAX:            ${DB_POOL_MAX:-20}
+      METRICS_POOL_MAX:       ${METRICS_POOL_MAX:-10}
+      # Bootstrap admin (solo aplica si users está vacía).
+      ADMIN_USERNAME:         ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD:         ${ADMIN_PASSWORD:-cambiame_al_primer_login}
+      ADMIN_EMAIL:            ${ADMIN_EMAIL:-admin@lbs.com.mx}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${APP_PORT:-5000}/health || exit 1"]
       interval: 30s
@@ -64,15 +108,16 @@ services:
       start_period: 20s
 
   # ------------------------------------------------------------------ #
-  # Cloudflare Tunnel — expone el servicio en https://<tu-dominio>
-  # docker compose --profile tunnel up -d cloudflared
-  cloudflared:
+  # Cloudflare Tunnel — expone el portal en https://<tu-dominio>        #
+  # Activar con:  docker compose --profile tunnel up -d                 #
+  # ------------------------------------------------------------------ #
+  tunnel:
     image: cloudflare/cloudflared:latest
-    container_name: ups-monitor-tunnel
-    restart: unless-stopped
+    container_name: ${PROJECT_NAME:-lbs}-tunnel
+    restart: *restart
     network_mode: host
     depends_on:
-      - monitor
+      - portal
     command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
     environment:
       TUNNEL_METRICS: 127.0.0.1:9113
@@ -80,7 +125,9 @@ services:
 
 volumes:
   pgdata:
+    name: ${PROJECT_NAME:-lbs}_pgdata
 
 networks:
-  monitor-net:
+  lbs-net:
     driver: bridge
+    name:  ${PROJECT_NAME:-lbs}-net

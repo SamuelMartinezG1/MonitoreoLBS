@@ -4,7 +4,7 @@ Flask-SocketIO==5.3.6
 python-socketio==5.16.0
 python-engineio==4.13.0
 eventlet>=0.40.3
-gunicorn>=21.2.0
+gunicorn>=21.2.0,<22       # 22+ removió el worker eventlet
 
 # --- Auth ---
 Flask-Login>=0.6.3
@@ -24,4 +24,3 @@ pymodbus==3.6.8
 python-dotenv>=1.0.0
 APScheduler==3.10.4
 requests==2.32.5
-zeroconf>=0.132.0

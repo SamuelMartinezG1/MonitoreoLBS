@@ -1,0 +1,40 @@
+{# Burger + overlay para el drawer del sidebar en móvil/iPad.
+   El CSS vive en responsive.css. Sólo añade el markup + el toggle JS. #}
+<button id="lbs-burger" aria-label="Menú de dispositivos" type="button">
+  <i class="bi bi-list bars"></i><i class="bi bi-x-lg x"></i>
+</button>
+<div id="lbs-drawer-ov" aria-hidden="true"></div>
+
+<script>
+(function(){
+  var root = document.documentElement;
+  function open(){ root.setAttribute('data-drawer','open'); }
+  function close(){ root.removeAttribute('data-drawer'); }
+  function toggle(){
+    root.getAttribute('data-drawer') === 'open' ? close() : open();
+  }
+  function bind(){
+    var b  = document.getElementById('lbs-burger');
+    var ov = document.getElementById('lbs-drawer-ov');
+    if(b)  b.addEventListener('click', toggle);
+    if(ov) ov.addEventListener('click', close);
+    // Cerrar al tocar un dispositivo dentro del sidebar (en móvil)
+    document.addEventListener('click', function(e){
+      if(root.getAttribute('data-drawer') !== 'open') return;
+      var t = e.target;
+      if(t.closest && t.closest('.sb-device')) close();
+    });
+    // Esc cierra
+    document.addEventListener('keydown', function(e){
+      if(e.key === 'Escape') close();
+    });
+    // Al pasar a desktop, limpiar estado
+    var mq = window.matchMedia('(min-width: 1025px)');
+    (mq.addEventListener ? mq.addEventListener('change', close)
+                         : mq.addListener(close));
+  }
+  if(document.readyState === 'loading')
+    document.addEventListener('DOMContentLoaded', bind);
+  else bind();
+})();
+</script>

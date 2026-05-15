@@ -18,7 +18,7 @@ monitoreo_bp = Blueprint('monitoreo', __name__)
 @monitoreo_bp.route('/analytics')
 @login_required
 def analytics_redirect():
-    return redirect(url_for('monitoreo.index'))
+    return redirect(url_for('lbs.monitoreo'))
 
 
 # =========================================================================
@@ -462,3 +462,40 @@ def recording_data(recording_id):
         'datos': datos,
         'total': len(datos)
     })
+
+
+@monitoreo_bp.route('/api/recording/<int:recording_id>/csv')
+@login_required
+@permiso_requerido('scada')
+def recording_csv(recording_id):
+    """Descarga una grabación como CSV."""
+    import csv
+    import io
+    db = current_app.db
+    grabacion = db.obtener_grabacion(recording_id)
+    if not grabacion:
+        return jsonify({'error': 'Grabación no encontrada'}), 404
+    datos = db.obtener_datos_grabacion(recording_id)
+
+    cols = [
+        'timestamp',
+        'voltaje_in_l1', 'voltaje_in_l2', 'voltaje_in_l3',
+        'voltaje_out_l1', 'voltaje_out_l2', 'voltaje_out_l3',
+        'frecuencia_in', 'frecuencia_out',
+        'corriente_out_l1', 'corriente_out_l2', 'corriente_out_l3',
+        'carga_pct', 'bateria_pct', 'voltaje_bateria', 'temperatura',
+        'power_mode', 'estado',
+    ]
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(cols)
+    for r in datos:
+        w.writerow([r.get(c, '') for c in cols])
+
+    name = f"grabacion-{recording_id}-{grabacion.get('nombre', 'sin-nombre')}.csv".replace(' ', '_')
+    return Response(
+        buf.getvalue(),
+        mimetype='text/csv',
+        headers={'Content-Disposition': f'attachment; filename="{name}"'},
+    )

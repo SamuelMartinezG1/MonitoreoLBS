@@ -1,44 +1,95 @@
 // DashboardApp.jsx — Fleet overview (Tablero global)
 
-const { useState: useStateD, useEffect: useEffectD, useMemo: useMemoD } = React;
+const { useState: useStateD, useEffect: useEffectD, useMemo: useMemoD, useRef: useRefD } = React;
+
+// Hook: anima un número desde 0 hasta `target` durante `duration` ms.
+function useCountUp(target, duration = 700) {
+  const [v, setV] = useStateD(0);
+  const startRef = useRefD(null);
+  const fromRef  = useRefD(0);
+  useEffectD(() => {
+    const numeric = Number(target) || 0;
+    fromRef.current = v;
+    startRef.current = performance.now();
+    let raf;
+    const tick = (now) => {
+      const t = Math.min(1, (now - startRef.current) / duration);
+      const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
+      setV(fromRef.current + (numeric - fromRef.current) * eased);
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line
+  }, [target, duration]);
+  return v;
+}
+
+function AnimatedNumber({ value, decimals = 0, suffix }) {
+  const v = useCountUp(value);
+  return <>{v.toFixed(decimals)}{suffix}</>;
+}
 
 function FleetHero({ sites, devices, alarms }) {
   const total   = devices.length;
   const online  = devices.filter(d => d.status === 'ok').length;
   const warn    = devices.filter(d => d.status === 'warn').length;
   const off     = devices.filter(d => d.status === 'off').length;
-  const totalKw = devices.reduce((s,d) => s + (d.kva * (d.load/100) * 0.9), 0).toFixed(1);
+  const totalKw = devices.reduce((s, d) => s + ((d.kva || 0) * ((d.load || 0)/100) * 0.9), 0);
+  const totalKvaCap = devices.reduce((s, d) => s + (d.kva || 0), 0);
   const critAlarms = alarms.filter(a => a.lvl === 'err' || a.lvl === 'warn').length;
+  const availPct = total > 0 ? Math.round((online / total) * 100) : 0;
+  const capPct   = totalKvaCap > 0 ? Math.round((totalKw / totalKvaCap) * 100) : 0;
+
+  // Autonomía mín: del UPS más estresado (carga alta, batería baja)
+  const candidates = devices.filter(d => d.status === 'ok' && d.bat > 0);
+  const worst = candidates.length
+    ? candidates.reduce((a, b) => ((a.bat || 100) < (b.bat || 100)) ? a : b)
+    : null;
+  const minRuntime = worst ? `${Math.max(2, Math.round(worst.bat * 0.4))}m` : '—';
+
+  // Regiones únicas (a partir de las subredes lan)
+  const regions = new Set(sites.map(s => s.region).filter(r => r && r !== '—'));
+
   return (
     <section className="fleet-hero">
       <div className="fh-title">
         <h1>Tablero · SCADA UPS</h1>
-        <div className="sub">FLOTA NACIONAL · {sites.length} SITIOS · {total} EQUIPOS · POLL 2s</div>
+        <div className="sub">
+          {total === 0 && sites.length === 0
+            ? <>FLOTA VACÍA · COMIENZA AGREGANDO UN SITIO Y UN UPS</>
+            : <>FLOTA · {sites.length} {sites.length === 1 ? 'SITIO' : 'SITIOS'} · {total} {total === 1 ? 'EQUIPO' : 'EQUIPOS'} · {regions.size || 1} REGIÓN(ES)</>
+          }
+        </div>
       </div>
-      <div className="fh-stat ok">
+      <div className={"fh-stat " + (total === 0 ? '' : online === total ? 'ok' : 'warn')}>
         <label>UPS En línea</label>
-        <div className="v">{online}<small>/{total}</small></div>
-        <div className="delta up">▲ 100% disponibilidad 24h</div>
+        <div className="v"><AnimatedNumber value={online}/><small>/{total}</small></div>
+        <div className="delta">
+          {total > 0
+            ? <>{availPct === 100 ? '▲' : '●'} {availPct}% disponibilidad</>
+            : <>sin UPS registrados</>}
+        </div>
       </div>
-      <div className={"fh-stat " + (warn ? 'warn' : 'ok')}>
+      <div className={"fh-stat " + (critAlarms ? 'warn' : 'ok')}>
         <label>Alarmas activas</label>
-        <div className="v">{critAlarms}</div>
+        <div className="v"><AnimatedNumber value={critAlarms}/></div>
         <div className="delta">{warn} warn · {off} offline</div>
       </div>
       <div className="fh-stat">
         <label>Carga total</label>
-        <div className="v">{totalKw}<small>kW</small></div>
-        <div className="delta">62% capacidad</div>
+        <div className="v"><AnimatedNumber value={totalKw} decimals={1}/><small>kW</small></div>
+        <div className="delta">{totalKvaCap > 0 ? <>{capPct}% de {totalKvaCap.toFixed(0)} kVA</> : <>sin capacidad cargada</>}</div>
       </div>
       <div className="fh-stat">
         <label>Sitios activos</label>
-        <div className="v">{sites.length}</div>
-        <div className="delta">3 regiones · MX</div>
+        <div className="v"><AnimatedNumber value={sites.length}/></div>
+        <div className="delta">{regions.size ? <>{regions.size} región(es)</> : <>—</>}</div>
       </div>
-      <div className="fh-stat ok">
+      <div className={"fh-stat " + (worst && worst.bat < 30 ? 'warn' : '')}>
         <label>Autonomía mín.</label>
-        <div className="v">38<small>min</small></div>
-        <div className="delta">MTY-03 · @ carga actual</div>
+        <div className="v">{minRuntime}</div>
+        <div className="delta">{worst ? <>{worst.name} · {worst.bat}% bat</> : <>—</>}</div>
       </div>
     </section>
   );
@@ -129,6 +180,14 @@ function DashboardApp() {
     document.documentElement.style.setProperty('--accent-glow', accent + '55');
   }, [accent]);
 
+  // ── Datos en vivo desde DataLayer (escucha refresh y re-renderiza) ──
+  const [, setTick] = useStateD(0);
+  useEffectD(() => {
+    const onRefresh = () => setTick(x => x + 1);
+    window.addEventListener('lbs:data-refresh', onRefresh);
+    return () => window.removeEventListener('lbs:data-refresh', onRefresh);
+  }, []);
+
   const { SITES, DEVICES, ALARMS } = window.MOCK;
 
   return (
@@ -140,30 +199,65 @@ function DashboardApp() {
         <div className="page-grid">
           <FleetHero sites={SITES} devices={DEVICES} alarms={ALARMS} />
 
-          <div className="sites-grid">
-            {SITES.map(s => <SiteCard key={s.id} site={s} devices={DEVICES} />)}
-          </div>
+          {SITES.length === 0 ? (
+            <div className="lbs-empty lbs-empty-big">
+              <i className="bi bi-geo-alt"></i>
+              <h4>Aún no hay sitios registrados</h4>
+              <p>Crea el primer sitio desde Inventario o usa el wizard de
+              ZeroTier en Diagnóstico para hacer el bootstrap completo
+              (join + escaneo + alta automática de UPS).</p>
+              <div style={{ display:'flex', gap:10, flexWrap:'wrap', justifyContent:'center' }}>
+                <a className="btn" href={(window.LBS_URLS && window.LBS_URLS.inventario) || '/inventario'}>
+                  <i className="bi bi-plus-circle"></i> Ir a Inventario
+                </a>
+                <a className="btn ghost" href={(window.LBS_URLS && window.LBS_URLS.diagnostico) || '/diagnostico'}>
+                  <i className="bi bi-magic"></i> Wizard ZeroTier
+                </a>
+              </div>
+            </div>
+          ) : (
+            <div className="sites-grid">
+              {SITES.map(s => <SiteCard key={s.id} site={s} devices={DEVICES} />)}
+            </div>
+          )}
 
           <div className="panels-row" style={{ gridTemplateColumns: '1.3fr 1fr' }}>
             <section className="eng-panel">
               <div className="eng-head">
                 <h3><i className="bi bi-bar-chart-line ico"></i> Equipos con mayor carga</h3>
-                <span className="live-badge"><span className="dot"></span> LIVE</span>
+                {DEVICES.length > 0 && <span className="live-badge"><span className="dot"></span> LIVE</span>}
               </div>
               <div className="eng-body">
-                <TopLoadList devices={DEVICES} />
+                {DEVICES.length > 0
+                  ? <TopLoadList devices={DEVICES} />
+                  : <div className="lbs-empty-mini">
+                      <i className="bi bi-bar-chart"></i>
+                      <span>Sin equipos para mostrar.</span>
+                    </div>
+                }
               </div>
             </section>
 
             <section className="eng-panel">
               <div className="eng-head">
                 <h3><i className="bi bi-bell-fill ico"></i> Eventos recientes</h3>
-                <span className="live-badge" style={{ color: 'var(--warn)' }}>{ALARMS.filter(a=>a.lvl!=='info').length} ACTIVAS</span>
+                {ALARMS.length > 0 && (
+                  <span className="live-badge" style={{ color: 'var(--warn)' }}>
+                    {ALARMS.filter(a=>a.lvl!=='info').length} ACTIVAS
+                  </span>
+                )}
               </div>
               <div className="eng-body" style={{ paddingTop: 10 }}>
-                <div className="feed">
-                  {ALARMS.map((a,i) => <FeedRow key={i} ts={a.ts} lvl={a.lvl} dev={a.dev} msg={{title:a.title,detail:a.detail}} />)}
-                </div>
+                {ALARMS.length > 0 ? (
+                  <div className="feed">
+                    {ALARMS.map((a,i) => <FeedRow key={i} ts={a.ts} lvl={a.lvl} dev={a.dev} msg={{title:a.title,detail:a.detail}} />)}
+                  </div>
+                ) : (
+                  <div className="lbs-empty-mini">
+                    <i className="bi bi-check-circle"></i>
+                    <span>Todo en orden — sin alarmas activas.</span>
+                  </div>
+                )}
               </div>
             </section>
           </div>

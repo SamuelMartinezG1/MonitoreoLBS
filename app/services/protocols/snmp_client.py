@@ -8,7 +8,7 @@ import logging
 import asyncio
 from typing import Dict, Any
 
-from pysnmp.hlapi.asyncio import (
+from pysnmp.hlapi.v3arch.asyncio import (
     SnmpEngine, CommunityData, UdpTransportTarget, ContextData,
     ObjectType, ObjectIdentity, get_cmd
 )

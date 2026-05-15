@@ -294,9 +294,6 @@ body.login-body::after {
 .lf-row:nth-of-type(2) { animation-delay: 440ms; }
 .lf-options         { animation: row-in 600ms cubic-bezier(.22,.61,.36,1) backwards; animation-delay: 520ms; }
 .lf-submit          { animation: row-in 600ms cubic-bezier(.22,.61,.36,1) backwards; animation-delay: 600ms; }
-.lf-sec-line        { animation: row-in 600ms cubic-bezier(.22,.61,.36,1) backwards; animation-delay: 680ms; }
-.lf-divider         { animation: row-in 600ms cubic-bezier(.22,.61,.36,1) backwards; animation-delay: 760ms; }
-.lf-alt             { animation: row-in 600ms cubic-bezier(.22,.61,.36,1) backwards; animation-delay: 840ms; }
 @keyframes row-in {
   from { opacity: 0; transform: translateX(-14px); filter: blur(4px); }
   to   { opacity: 1; transform: translateX(0);     filter: blur(0); }
@@ -381,20 +378,13 @@ body.login-body::after {
   from { opacity: 0; transform: rotate(45deg) translate(-1px,-1px) scale(0); }
   to   { opacity: 1; transform: rotate(45deg) translate(-1px,-1px) scale(1); }
 }
-.lf-forgot { position: relative; transition: color 200ms; }
-.lf-forgot::after {
-  content: '';
-  position: absolute; left: 0; right: 0; bottom: -2px; height: 1px;
-  background: var(--cyan); box-shadow: 0 0 8px var(--cyan-glow);
-  transform: scaleX(0); transform-origin: right;
-  transition: transform 300ms cubic-bezier(.4,0,.2,1);
-}
-.lf-forgot:hover::after { transform: scaleX(1); transform-origin: left; }
-.lf-forgot {
-  color: var(--cyan); text-decoration: none;
+.lf-hint {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.10em;
   text-transform: uppercase;
 }
-.lf-forgot:hover { text-shadow: 0 0 8px var(--cyan-glow); }
 
 .lf-submit {
   width: 100%;
@@ -429,51 +419,8 @@ body.login-body::after {
 .lf-submit i { transition: transform 300ms; }
 .lf-submit:hover i { transform: translateX(4px); }
 
-.lf-divider {
-  display: flex; align-items: center; gap: 12px;
-  margin: 20px 0 14px;
-  font-family: var(--font-mono);
-  font-size: 9.5px; letter-spacing: 0.24em;
-  color: var(--text-faint); text-transform: uppercase;
-}
-.lf-divider::before, .lf-divider::after {
-  content: ''; flex: 1; height: 1px;
-  background: linear-gradient(90deg, transparent, var(--border), transparent);
-}
-.lf-alt {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
-}
-.lf-alt button {
-  padding: 10px;
-  background: rgba(0,180,255,0.03);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-sec);
-  font-family: var(--font-mono); font-size: 10.5px;
-  letter-spacing: 0.10em; cursor: pointer;
-  transition: all 200ms;
-  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-}
-.lf-alt button {
-  position: relative;
-  overflow: hidden;
-}
-.lf-alt button::before {
-  content: '';
-  position: absolute; inset: 0;
-  background: radial-gradient(circle at var(--mx, 50%) var(--my, 50%), rgba(0,180,255,0.20), transparent 60%);
-  opacity: 0; transition: opacity 240ms;
-}
-.lf-alt button:hover {
-  background: rgba(0,180,255,0.08);
-  border-color: var(--border-active);
-  color: var(--text-main);
-  transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(0,180,255,0.15);
-}
-.lf-alt button:hover::before { opacity: 1; }
-.lf-alt button:hover i { transform: scale(1.15) rotate(-4deg); transition: transform 280ms; }
-.lf-alt button i { color: var(--cyan); font-size: 13px; }
+/* (Elementos retirados: lf-divider, lf-alt, lf-sec-line — eran SSO/X.509
+    placeholders sin backend, no se reemplazaron) */
 
 /* Security line above divider */
 .lf-sec-line {

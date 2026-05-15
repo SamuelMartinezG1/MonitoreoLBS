@@ -1,17 +1,14 @@
 """
-GestorDB — Capa de acceso a PostgreSQL para el servicio de monitoreo.
+GestorDB — Capa de acceso a PostgreSQL para el portal LBS Monitor.
 
-Versión adaptada del `app/base_datos.py` original (LBS-SERVICIO-APP) que
-mantiene EXACTAMENTE las firmas usadas por:
+Singleton con un pool psycopg 3 lazy (no abre conexiones al importar). Toda
+la app comparte la misma instancia vía `current_app.db` o `GestorDB()`.
 
-    - app/services/monitoring_service.py
-    - app/services/modbus_monitor.py
-    - app/services/pg_metrics.py        (reemplazo de InfluxDB)
-
-Únicas tablas tocadas:
-    monitoreo_config, sitios, ups_oid_profiles,
+Tablas tocadas:
+    sitios, monitoreo_config, ups_oid_profiles,
     ups_telemetry_log, ups_recordings, ups_recording_data,
-    ups_chart_history, ups_metrics
+    ups_chart_history, ups_metrics,
+    users, user_permissions, schema_migrations
 """
 import os
 import logging
@@ -25,28 +22,40 @@ logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
-# Pool                                                                         #
+# Pool — lazy: no abre conexiones hasta el primer uso.                         #
 # --------------------------------------------------------------------------- #
 class _Pool:
     def __init__(self, dsn: str):
-        self.pool = ConnectionPool(
-            conninfo=dsn,
-            min_size=1,
-            max_size=int(os.environ.get('DB_POOL_MAX', 10)),
-            kwargs={'autocommit': True, 'row_factory': dict_row},
-            open=True,
-        )
+        self.dsn = dsn
+        self._pool: ConnectionPool | None = None
+
+    def _ensure(self):
+        if self._pool is None:
+            self._pool = ConnectionPool(
+                conninfo=self.dsn,
+                min_size=int(os.environ.get('DB_POOL_MIN', 2)),
+                max_size=int(os.environ.get('DB_POOL_MAX', 20)),
+                kwargs={'autocommit': True, 'row_factory': dict_row},
+                open=True,
+            )
+        return self._pool
+
+    @property
+    def pool(self) -> ConnectionPool:
+        return self._ensure()
 
     @contextmanager
     def get_connection(self):
-        with self.pool.connection() as conn:
+        with self._ensure().connection() as conn:
             yield conn
 
     def get_row_factory(self):
         return dict_row
 
     def close(self):
-        self.pool.close()
+        if self._pool is not None:
+            self._pool.close()
+            self._pool = None
 
 
 # --------------------------------------------------------------------------- #
@@ -65,9 +74,9 @@ class GestorDB:
             cls._instance.pool = _Pool(dsn)
         return cls._instance
 
-    # ------------------------------------------------------------------ #
-    # Configuración de dispositivos                                       #
-    # ------------------------------------------------------------------ #
+    # ====================================================================== #
+    # Configuración de dispositivos                                          #
+    # ====================================================================== #
     def obtener_monitoreo_ups(self):
         """Lista de UPS habilitados para polling."""
         try:
@@ -75,14 +84,11 @@ class GestorDB:
                 cur = conn.cursor()
                 cur.execute(
                     """
-                    SELECT m.id, m.nombre, m.ip, m.protocolo,
-                           m.snmp_port, m.snmp_community, m.snmp_version,
-                           m.modbus_port, m.modbus_unit_id,
-                           m.ups_type, m.fases,
-                           s.nombre AS sitio_nombre
+                    SELECT m.*, s.nombre AS sitio_nombre
                       FROM monitoreo_config m
                       LEFT JOIN sitios s ON s.id = m.sitio_id
                      WHERE COALESCE(m.activo, TRUE) = TRUE
+                     ORDER BY m.nombre
                     """
                 )
                 return [dict(r) for r in cur.fetchall()]
@@ -90,13 +96,174 @@ class GestorDB:
             logger.error("obtener_monitoreo_ups: %s", e)
             return []
 
+    def agregar_monitoreo_ups(self, datos):
+        """Crea un dispositivo en monitoreo_config."""
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO monitoreo_config
+                        (ip, modbus_port, modbus_unit_id, nombre, protocolo,
+                         snmp_community, snmp_port, snmp_version,
+                         ups_type, fases, sitio_id, notas_tecnicas, activo)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        datos['ip'],
+                        int(datos.get('modbus_port', datos.get('port', 502)) or 502),
+                        int(datos.get('modbus_unit_id', datos.get('slave_id', 1)) or 1),
+                        datos.get('nombre', 'UPS'),
+                        datos.get('protocolo', 'modbus'),
+                        datos.get('snmp_community', 'public'),
+                        int(datos.get('snmp_port', 161) or 161),
+                        int(datos.get('snmp_version', 1) or 1),
+                        datos.get('ups_type', 'invt_enterprise'),
+                        int(datos['fases']) if datos.get('fases') else None,
+                        int(datos['sitio_id']) if datos.get('sitio_id') else None,
+                        datos.get('notas_tecnicas'),
+                        bool(datos.get('activo', True)),
+                    ),
+                )
+                return True
+        except Exception as e:
+            logger.error("agregar_monitoreo_ups: %s", e)
+            return False
+
+    def eliminar_monitoreo_ups(self, id_device):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM monitoreo_config WHERE id = %s", (id_device,))
+                return True
+        except Exception as e:
+            logger.error("eliminar_monitoreo_ups: %s", e)
+            return False
+
+    # ====================================================================== #
+    # Sitios                                                                  #
+    # ====================================================================== #
+    def obtener_sitios(self):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT * FROM sitios ORDER BY numero_sitio NULLS LAST, nombre")
+                return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            logger.error("obtener_sitios: %s", e)
+            return []
+
+    def agregar_sitio(self, datos):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO sitios
+                        (numero_sitio, nombre, subred_lan, router_ip_lan, router_ip_zt,
+                         router_node_id, router_firmware, fecha_despliegue, notas)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        int(datos['numero_sitio']),
+                        datos['nombre'],
+                        datos.get('subred_lan'),
+                        datos.get('router_ip_lan'),
+                        datos.get('router_ip_zt'),
+                        datos.get('router_node_id'),
+                        datos.get('router_firmware'),
+                        datos.get('fecha_despliegue') or None,
+                        datos.get('notas'),
+                    ),
+                )
+                return True
+        except Exception as e:
+            logger.error("agregar_sitio: %s", e)
+            return False
+
+    def actualizar_sitio(self, sitio_id, datos):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    UPDATE sitios SET
+                        numero_sitio     = COALESCE(%s, numero_sitio),
+                        nombre           = COALESCE(%s, nombre),
+                        subred_lan       = %s,
+                        router_ip_lan    = %s,
+                        router_ip_zt     = %s,
+                        router_node_id   = %s,
+                        router_firmware  = %s,
+                        fecha_despliegue = %s,
+                        notas            = %s
+                     WHERE id = %s
+                    """,
+                    (
+                        int(datos['numero_sitio']) if datos.get('numero_sitio') else None,
+                        datos.get('nombre'),
+                        datos.get('subred_lan'),
+                        datos.get('router_ip_lan'),
+                        datos.get('router_ip_zt'),
+                        datos.get('router_node_id'),
+                        datos.get('router_firmware'),
+                        datos.get('fecha_despliegue') or None,
+                        datos.get('notas'),
+                        sitio_id,
+                    ),
+                )
+                return True
+        except Exception as e:
+            logger.error("actualizar_sitio: %s", e)
+            return False
+
+    def eliminar_sitio(self, sitio_id):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM sitios WHERE id = %s", (sitio_id,))
+                return True
+        except Exception as e:
+            logger.error("eliminar_sitio: %s", e)
+            return False
+
+    def asignar_dispositivo_sitio(self, dev_id, sitio_id):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE monitoreo_config SET sitio_id = %s WHERE id = %s",
+                    (sitio_id, dev_id),
+                )
+                return True
+        except Exception as e:
+            logger.error("asignar_dispositivo_sitio: %s", e)
+            return False
+
+    def actualizar_notas_dispositivo(self, dev_id, notas):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE monitoreo_config SET notas_tecnicas = %s WHERE id = %s",
+                    (notas, dev_id),
+                )
+                return True
+        except Exception as e:
+            logger.error("actualizar_notas_dispositivo: %s", e)
+            return False
+
+    # ====================================================================== #
+    # Perfiles OID                                                            #
+    # ====================================================================== #
     def obtener_oid_profile(self, device_id: int):
         try:
             with self.pool.get_connection() as conn:
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT variable_name, oid, factor, unit "
-                    "  FROM ups_oid_profiles WHERE device_id = %s",
+                    "SELECT variable_name, oid, factor, unit, data_type, description "
+                    "  FROM ups_oid_profiles WHERE device_id = %s "
+                    "  ORDER BY variable_name",
                     (device_id,),
                 )
                 rows = cur.fetchall()
@@ -105,9 +272,42 @@ class GestorDB:
             logger.debug("obtener_oid_profile: %s", e)
             return None
 
-    # ------------------------------------------------------------------ #
-    # Telemetría — buffer circular (10 min)                              #
-    # ------------------------------------------------------------------ #
+    def guardar_oid_profile(self, device_id: int, mappings: list) -> bool:
+        """Reemplaza el perfil completo de OIDs de un dispositivo."""
+        try:
+            with self.pool.get_connection() as conn:
+                with conn.transaction():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "DELETE FROM ups_oid_profiles WHERE device_id = %s",
+                            (device_id,),
+                        )
+                        for m in (mappings or []):
+                            cur.execute(
+                                """
+                                INSERT INTO ups_oid_profiles
+                                    (device_id, variable_name, oid, data_type,
+                                     factor, unit, description)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                """,
+                                (
+                                    device_id,
+                                    m['variable_name'],
+                                    m['oid'],
+                                    m.get('data_type', 'Integer'),
+                                    float(m.get('factor', 1.0)),
+                                    m.get('unit', ''),
+                                    m.get('description', ''),
+                                ),
+                            )
+            return True
+        except Exception as e:
+            logger.error("guardar_oid_profile: %s", e)
+            return False
+
+    # ====================================================================== #
+    # Telemetría — buffer circular (10 min)                                  #
+    # ====================================================================== #
     def insertar_telemetria(self, device_id: int, datos: dict) -> bool:
         try:
             with self.pool.get_connection() as conn:
@@ -140,6 +340,29 @@ class GestorDB:
             logger.debug("insertar_telemetria: %s", e)
             return False
 
+    def obtener_telemetria_reciente(self, device_id, minutos=10):
+        """Retorna últimos N minutos del buffer circular."""
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT * FROM ups_telemetry_log
+                     WHERE device_id = %s
+                       AND timestamp >= NOW() - make_interval(mins => %s)
+                     ORDER BY timestamp ASC
+                    """,
+                    (device_id, minutos),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+                for row in rows:
+                    if row.get('timestamp'):
+                        row['timestamp'] = row['timestamp'].isoformat()
+                return rows
+        except Exception as e:
+            logger.debug("obtener_telemetria_reciente: %s", e)
+            return []
+
     def limpiar_telemetria_antigua(self, minutos: int = 10) -> int:
         try:
             with self.pool.get_connection() as conn:
@@ -154,9 +377,39 @@ class GestorDB:
             logger.debug("limpiar_telemetria_antigua: %s", e)
             return 0
 
-    # ------------------------------------------------------------------ #
-    # Historial de gráficas (~30 s por punto)                            #
-    # ------------------------------------------------------------------ #
+    # ====================================================================== #
+    # Historial de gráficas (~30 s por punto)                                #
+    # ====================================================================== #
+    def obtener_ultimo_estado(self, device_id):
+        """Última lectura de ups_chart_history (para evitar delay en UI)."""
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT voltaje_in_l1, voltaje_in_l2, voltaje_in_l3,
+                           voltaje_out_l1, voltaje_out_l2, voltaje_out_l3,
+                           frecuencia_in, frecuencia_out,
+                           corriente_out_l1, corriente_out_l2, corriente_out_l3,
+                           carga_pct, bateria_pct, temperatura, timestamp
+                      FROM ups_chart_history
+                     WHERE device_id = %s
+                     ORDER BY timestamp DESC
+                     LIMIT 1
+                    """,
+                    (device_id,),
+                )
+                row = cur.fetchone()
+                if row:
+                    r = dict(row)
+                    if r.get('timestamp'):
+                        r['timestamp'] = r['timestamp'].isoformat()
+                    return r
+                return None
+        except Exception as e:
+            logger.debug("obtener_ultimo_estado: %s", e)
+            return None
+
     def guardar_punto_historial(self, device_id: int, datos: dict) -> bool:
         try:
             with self.pool.get_connection() as conn:
@@ -190,6 +443,35 @@ class GestorDB:
             logger.error("guardar_punto_historial: %s", e)
             return False
 
+    def obtener_historial_device(self, device_id, horas=6):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT timestamp, voltaje_in_l1, voltaje_in_l2, voltaje_in_l3,
+                           voltaje_out_l1, voltaje_out_l2, voltaje_out_l3,
+                           frecuencia_in, frecuencia_out, temperatura,
+                           corriente_out_l1, corriente_out_l2, corriente_out_l3,
+                           carga_pct, bateria_pct,
+                           voltaje_bateria, power_mode, power_factor,
+                           active_power, apparent_power, battery_remain_time
+                      FROM ups_chart_history
+                     WHERE device_id = %s
+                       AND timestamp >= NOW() - make_interval(hours => %s)
+                     ORDER BY timestamp ASC
+                    """,
+                    (device_id, horas),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+                for r in rows:
+                    if r.get('timestamp'):
+                        r['timestamp'] = r['timestamp'].isoformat()
+                return rows
+        except Exception as e:
+            logger.warning("obtener_historial_device: %s", e)
+            return []
+
     def limpiar_historial_antiguo(self, dias: int = 30) -> int:
         try:
             with self.pool.get_connection() as conn:
@@ -207,21 +489,300 @@ class GestorDB:
             logger.warning("limpiar_historial_antiguo: %s", e)
             return 0
 
-    # ------------------------------------------------------------------ #
-    # Grabaciones manuales                                                #
-    # ------------------------------------------------------------------ #
+    # ====================================================================== #
+    # Analytics — calidad de energía                                          #
+    # ====================================================================== #
+    def calcular_calidad_energia(self, device_id, horas=24):
+        """Calcula métricas globales de calidad de energía."""
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    WITH global_avg AS (
+                        SELECT AVG(voltaje_in_l1) AS avg_global
+                          FROM ups_chart_history
+                         WHERE device_id = %s
+                           AND timestamp > NOW() - make_interval(hours => %s)
+                           AND voltaje_in_l1 IS NOT NULL AND voltaje_in_l1 > 0
+                    ),
+                    stats AS (
+                        SELECT
+                            AVG(voltaje_in_l1)  AS v_avg,
+                            STDDEV(voltaje_in_l1) AS v_stddev,
+                            MIN(voltaje_in_l1)  AS v_min,
+                            MAX(voltaje_in_l1)  AS v_max,
+                            AVG(voltaje_out_l1) AS v_out_avg,
+                            AVG(frecuencia_in)  AS f_avg,
+                            MIN(frecuencia_in)  AS f_min,
+                            MAX(frecuencia_in)  AS f_max,
+                            STDDEV(frecuencia_in) AS f_stddev,
+                            AVG(carga_pct)      AS load_avg,
+                            MIN(carga_pct)      AS load_min,
+                            MAX(carga_pct)      AS load_max,
+                            AVG(bateria_pct)    AS bat_avg,
+                            MIN(bateria_pct)    AS bat_min,
+                            AVG(temperatura)    AS temp_avg,
+                            MAX(temperatura)    AS temp_max,
+                            COUNT(*)            AS total,
+                            COUNT(*) FILTER (
+                                WHERE voltaje_in_l1 < (SELECT avg_global * 0.90 FROM global_avg)
+                                  AND voltaje_in_l1 > 0
+                            ) AS sags,
+                            COUNT(*) FILTER (
+                                WHERE voltaje_in_l1 > (SELECT avg_global * 1.10 FROM global_avg)
+                            ) AS swells,
+                            COUNT(*) FILTER (WHERE bateria_pct < 50 AND bateria_pct > 0) AS low_battery,
+                            COUNT(*) FILTER (WHERE temperatura > 40 AND temperatura > 0)  AS high_temp
+                          FROM ups_chart_history
+                         WHERE device_id = %s
+                           AND timestamp > NOW() - make_interval(hours => %s)
+                           AND voltaje_in_l1 IS NOT NULL AND voltaje_in_l1 > 0
+                    )
+                    SELECT * FROM stats
+                    """,
+                    (device_id, horas, device_id, horas),
+                )
+                row = cur.fetchone()
+                if not row or not row.get('total'):
+                    return {'error': 'Sin datos para el periodo solicitado', 'total': 0}
+
+                r = dict(row)
+                v_avg = float(r['v_avg'] or 0)
+                v_stddev = float(r['v_stddev'] or 0)
+                if v_avg > 0:
+                    desviacion_pct = (v_stddev / v_avg) * 100
+                    pqi = max(0, min(100, 100 - (desviacion_pct * 10)))
+                else:
+                    pqi = 0
+                f_avg = float(r['f_avg'] or 60)
+
+                return {
+                    'total_lecturas': r['total'],
+                    'voltaje': {
+                        'promedio':        round(v_avg, 1),
+                        'min':             round(float(r['v_min'] or 0), 1),
+                        'max':             round(float(r['v_max'] or 0), 1),
+                        'stddev':          round(v_stddev, 2),
+                        'salida_promedio': round(float(r['v_out_avg'] or 0), 1),
+                        'pqi':             round(pqi, 1),
+                    },
+                    'frecuencia': {
+                        'promedio': round(f_avg, 2),
+                        'min':      round(float(r['f_min'] or 0), 2),
+                        'max':      round(float(r['f_max'] or 0), 2),
+                        'desviacion_nominal': round(abs(f_avg - 60.0), 3),
+                    },
+                    'eventos': {
+                        'sags':        r['sags'] or 0,
+                        'swells':      r['swells'] or 0,
+                        'low_battery': r['low_battery'] or 0,
+                        'high_temp':   r['high_temp'] or 0,
+                    },
+                    'bateria': {
+                        'promedio': round(float(r['bat_avg'] or 0), 1),
+                        'min':      round(float(r['bat_min'] or 0), 1),
+                    },
+                    'carga': {
+                        'promedio': round(float(r['load_avg'] or 0), 1),
+                        'min':      round(float(r['load_min'] or 0), 1),
+                        'max':      round(float(r['load_max'] or 0), 1),
+                    },
+                    'temperatura': {
+                        'promedio': round(float(r['temp_avg'] or 0), 1),
+                        'max':      round(float(r['temp_max'] or 0), 1),
+                    },
+                }
+        except Exception as e:
+            logger.error("calcular_calidad_energia: %s", e)
+            return {'error': str(e)}
+
+    def obtener_perfil_horario(self, device_id, horas=24):
+        """Métricas agrupadas por hora para gráficas de analytics."""
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT DATE_TRUNC('hour', timestamp) AS hora,
+                           AVG(voltaje_in_l1)  AS voltaje_in_avg,
+                           MIN(voltaje_in_l1)  AS voltaje_in_min,
+                           MAX(voltaje_in_l1)  AS voltaje_in_max,
+                           AVG(voltaje_out_l1) AS voltaje_out_avg,
+                           AVG(frecuencia_in)  AS frecuencia_avg,
+                           AVG(carga_pct)      AS carga_avg,
+                           AVG(bateria_pct)    AS bateria_avg,
+                           AVG(temperatura)    AS temperatura_avg,
+                           COUNT(*)            AS lecturas
+                      FROM ups_chart_history
+                     WHERE device_id = %s
+                       AND timestamp > NOW() - make_interval(hours => %s)
+                       AND voltaje_in_l1 IS NOT NULL AND voltaje_in_l1 > 0
+                     GROUP BY DATE_TRUNC('hour', timestamp)
+                     ORDER BY hora ASC
+                    """,
+                    (device_id, horas),
+                )
+                rows = []
+                for r in cur.fetchall():
+                    r = dict(r)
+                    if r.get('hora'):
+                        r['hora'] = r['hora'].isoformat()
+                    for k in ('voltaje_in_avg', 'voltaje_in_min', 'voltaje_in_max',
+                              'voltaje_out_avg', 'carga_avg', 'bateria_avg', 'temperatura_avg'):
+                        if r.get(k) is not None:
+                            r[k] = round(float(r[k]), 1)
+                    if r.get('frecuencia_avg') is not None:
+                        r['frecuencia_avg'] = round(float(r['frecuencia_avg']), 2)
+                    rows.append(r)
+                return rows
+        except Exception as e:
+            logger.error("obtener_perfil_horario: %s", e)
+            return []
+
+    # ====================================================================== #
+    # Grabaciones manuales                                                    #
+    # ====================================================================== #
+    def iniciar_grabacion(self, device_id, nombre=None):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO ups_recordings (device_id, nombre, activa)
+                    VALUES (%s, %s, TRUE)
+                    RETURNING id, device_id, nombre, inicio, activa
+                    """,
+                    (device_id, nombre),
+                )
+                row = cur.fetchone()
+                if row:
+                    r = dict(row)
+                    if r.get('inicio'):
+                        r['inicio'] = r['inicio'].isoformat()
+                    return r
+                return None
+        except Exception as e:
+            logger.error("iniciar_grabacion: %s", e)
+            return None
+
+    def detener_grabacion(self, recording_id):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    UPDATE ups_recordings
+                       SET activa = FALSE,
+                           fin = NOW(),
+                           muestras = (SELECT COUNT(*) FROM ups_recording_data
+                                       WHERE recording_id = %s)
+                     WHERE id = %s
+                    RETURNING id, device_id, nombre, inicio, fin, muestras, activa
+                    """,
+                    (recording_id, recording_id),
+                )
+                row = cur.fetchone()
+                if row:
+                    r = dict(row)
+                    if r.get('inicio'):
+                        r['inicio'] = r['inicio'].isoformat()
+                    if r.get('fin'):
+                        r['fin'] = r['fin'].isoformat()
+                    return r
+                return None
+        except Exception as e:
+            logger.error("detener_grabacion: %s", e)
+            return None
+
+    def obtener_grabaciones(self, device_id=None):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                if device_id:
+                    cur.execute(
+                        """
+                        SELECT r.*, mc.nombre AS device_nombre, mc.ip AS device_ip
+                          FROM ups_recordings r
+                          JOIN monitoreo_config mc ON r.device_id = mc.id
+                         WHERE r.device_id = %s
+                         ORDER BY r.inicio DESC
+                        """,
+                        (device_id,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT r.*, mc.nombre AS device_nombre, mc.ip AS device_ip
+                          FROM ups_recordings r
+                          JOIN monitoreo_config mc ON r.device_id = mc.id
+                         ORDER BY r.inicio DESC
+                        """
+                    )
+                rows = [dict(r) for r in cur.fetchall()]
+                for r in rows:
+                    if r.get('inicio'):
+                        r['inicio'] = r['inicio'].isoformat()
+                    if r.get('fin'):
+                        r['fin'] = r['fin'].isoformat()
+                return rows
+        except Exception as e:
+            logger.error("obtener_grabaciones: %s", e)
+            return []
+
+    def obtener_grabacion(self, recording_id):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT r.*, mc.nombre AS device_nombre, mc.ip AS device_ip
+                      FROM ups_recordings r
+                      JOIN monitoreo_config mc ON r.device_id = mc.id
+                     WHERE r.id = %s
+                    """,
+                    (recording_id,),
+                )
+                row = cur.fetchone()
+                if row:
+                    r = dict(row)
+                    if r.get('inicio'):
+                        r['inicio'] = r['inicio'].isoformat()
+                    if r.get('fin'):
+                        r['fin'] = r['fin'].isoformat()
+                    return r
+                return None
+        except Exception as e:
+            logger.error("obtener_grabacion: %s", e)
+            return None
+
+    def eliminar_grabacion(self, recording_id):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute("DELETE FROM ups_recordings WHERE id = %s", (recording_id,))
+                return True
+        except Exception as e:
+            logger.error("eliminar_grabacion: %s", e)
+            return False
+
     def obtener_grabacion_activa(self, device_id: int):
         try:
             with self.pool.get_connection() as conn:
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT id FROM ups_recordings "
+                    "SELECT * FROM ups_recordings "
                     "WHERE device_id = %s AND activa = TRUE "
-                    "ORDER BY id DESC LIMIT 1",
+                    "ORDER BY inicio DESC LIMIT 1",
                     (device_id,),
                 )
                 row = cur.fetchone()
-                return dict(row) if row else None
+                if row:
+                    r = dict(row)
+                    if r.get('inicio'):
+                        r['inicio'] = r['inicio'].isoformat()
+                    return r
+                return None
         except Exception as e:
             logger.debug("obtener_grabacion_activa: %s", e)
             return None
@@ -257,3 +818,21 @@ class GestorDB:
         except Exception as e:
             logger.debug("insertar_dato_grabacion: %s", e)
             return False
+
+    def obtener_datos_grabacion(self, recording_id):
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT * FROM ups_recording_data "
+                    "WHERE recording_id = %s ORDER BY timestamp ASC",
+                    (recording_id,),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+                for r in rows:
+                    if r.get('timestamp'):
+                        r['timestamp'] = r['timestamp'].isoformat()
+                return rows
+        except Exception as e:
+            logger.error("obtener_datos_grabacion: %s", e)
+            return []

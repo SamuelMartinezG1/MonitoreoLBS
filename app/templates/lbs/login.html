@@ -5,21 +5,23 @@
   <title>Acceso · LBS Monitor</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/tokens.css') }}" />
   <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/login.css') }}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/responsive.css') }}" />
 </head>
 <body class="login-body">
+  {% include 'lbs/_splash.html' %}
 
-  <div class="bg-deco">
+  <div class="bg-deco" aria-hidden="true">
     <svg viewBox="0 0 1600 600" preserveAspectRatio="none" fill="none">
       <defs>
         <linearGradient id="wv1" x1="0" x2="1" y1="0" y2="0">
-          <stop offset="0%" stop-color="#00b4ff" stop-opacity="0"/>
-          <stop offset="50%" stop-color="#00b4ff" stop-opacity="1"/>
+          <stop offset="0%"   stop-color="#00b4ff" stop-opacity="0"/>
+          <stop offset="50%"  stop-color="#00b4ff" stop-opacity="1"/>
           <stop offset="100%" stop-color="#00b4ff" stop-opacity="0"/>
         </linearGradient>
         <linearGradient id="wv2" x1="0" x2="1" y1="0" y2="0">
-          <stop offset="0%" stop-color="#ff3df0" stop-opacity="0"/>
-          <stop offset="50%" stop-color="#ff3df0" stop-opacity="0.7"/>
-          <stop offset="100%" stop-color="#ff3df0" stop-opacity="0"/>
+          <stop offset="0%"   stop-color="#22e1ff" stop-opacity="0"/>
+          <stop offset="50%"  stop-color="#22e1ff" stop-opacity="0.7"/>
+          <stop offset="100%" stop-color="#22e1ff" stop-opacity="0"/>
         </linearGradient>
       </defs>
       <path d="M0,300 Q200,180 400,300 T800,300 T1200,300 T1600,300" stroke="url(#wv1)" stroke-width="1.5"/>
@@ -33,13 +35,12 @@
       <img src="{{ url_for('static', filename='lbs/assets/lbs-logo.svg') }}" alt="LBS" />
       <div class="meta">
         <strong>LBS · MONITOR</strong>
-        <span>SCADA · UPS · v3.2.4</span>
+        <span>SCADA · UPS · v1.0</span>
       </div>
     </div>
     <div class="top-mono">
       <span><span class="dot"></span> SISTEMA OPERATIVO</span>
-      <span><i class="bi bi-shield-lock-fill"></i> TLS 1.3 · CIFRADO E2E</span>
-      <span><i class="bi bi-globe"></i> MX · CDMX</span>
+      <span><i class="bi bi-shield-lock-fill"></i> SESIÓN CIFRADA</span>
     </div>
   </header>
 
@@ -68,11 +69,15 @@
 
     <form id="loginForm" method="POST" action="{{ url_for('lbs.login') }}">
       <input type="hidden" name="next" value="{{ next_url or '' }}" />
+
       <div class="lf-row">
         <label>Usuario</label>
         <div class="lf-input">
           <i class="bi bi-person-fill"></i>
-          <input type="text" name="user" placeholder="usuario@lbs.com.mx" autocomplete="username" required value="{{ last_user or '' }}" />
+          <input type="text" name="user" placeholder="admin"
+                 autocomplete="username" autocapitalize="off"
+                 spellcheck="false" required
+                 value="{{ last_user or '' }}" />
         </div>
       </div>
 
@@ -80,8 +85,12 @@
         <label>Contraseña</label>
         <div class="lf-input">
           <i class="bi bi-shield-lock-fill"></i>
-          <input id="pw" type="password" name="pw" placeholder="••••••••" autocomplete="current-password" required />
-          <button type="button" class="show-pw" onclick="togglePw()" id="pwBtn" aria-label="Mostrar"><i class="bi bi-eye"></i></button>
+          <input id="pw" type="password" name="pw" placeholder="••••••••"
+                 autocomplete="current-password" required />
+          <button type="button" class="show-pw" onclick="togglePw()" id="pwBtn"
+                  aria-label="Mostrar contraseña">
+            <i class="bi bi-eye"></i>
+          </button>
         </div>
       </div>
 
@@ -90,60 +99,45 @@
           <input type="checkbox" name="remember" />
           <span>Recordar sesión</span>
         </label>
-        <a href="#" class="lf-forgot" onclick="alert('Contacta al administrador del sistema.');return false;">¿Olvidó su contraseña?</a>
+        <span class="lf-hint">Sesión válida por 7 días</span>
       </div>
 
       <button type="submit" class="lf-submit" id="submitBtn">
         <i class="bi bi-box-arrow-in-right"></i>
         <span>INGRESAR AL SCADA</span>
       </button>
-
-      <div class="lf-sec-line">
-        <span class="sec-dot"></span>
-        <span>SESIÓN CIFRADA · AES-256-GCM</span>
-        <span class="sec-mono">TLS 1.3</span>
-      </div>
-
-      <div class="lf-divider">o continuar con</div>
-
-      <div class="lf-alt">
-        <button type="button" disabled title="Próximamente"><i class="bi bi-microsoft"></i> SSO MICROSOFT</button>
-        <button type="button" disabled title="Próximamente"><i class="bi bi-key-fill"></i> CERTIFICADO X.509</button>
-      </div>
     </form>
   </main>
 
   <footer class="login-foot">
-    <b>LBS</b> · POWER SYSTEMS · CDMX · MTY · GDL — <span id="ftClock">--:--:--</span> UTC
+    <b>LBS</b> · POWER SYSTEMS — <span id="ftClock">--:--:--</span> UTC
   </footer>
 
   <script>
-    document.querySelectorAll('.lf-alt button').forEach(b => {
-      b.addEventListener('mousemove', e => {
-        const r = b.getBoundingClientRect();
-        b.style.setProperty('--mx', ((e.clientX - r.left) / r.width * 100) + '%');
-        b.style.setProperty('--my', ((e.clientY - r.top)  / r.height * 100) + '%');
-      });
-    });
     function togglePw() {
-      const pw = document.getElementById('pw');
+      const pw  = document.getElementById('pw');
       const ico = document.querySelector('#pwBtn i');
-      if (pw.type === 'password') { pw.type = 'text'; ico.className = 'bi bi-eye-slash'; }
-      else { pw.type = 'password'; ico.className = 'bi bi-eye'; }
+      const isHidden = pw.type === 'password';
+      pw.type = isHidden ? 'text' : 'password';
+      ico.className = isHidden ? 'bi bi-eye-slash' : 'bi bi-eye';
     }
     document.getElementById('loginForm').addEventListener('submit', () => {
       const btn = document.getElementById('submitBtn');
-      btn.innerHTML = '<i class="bi bi-arrow-repeat" style="animation:spin 1s linear infinite"></i><span>AUTENTICANDO…</span>';
+      btn.innerHTML =
+        '<i class="bi bi-arrow-repeat" style="animation:lbs-spin 0.9s linear infinite"></i>' +
+        '<span>AUTENTICANDO…</span>';
       btn.disabled = true;
     });
-    function tick() {
-      const d = new Date();
-      const p = n => String(n).padStart(2,'0');
-      document.getElementById('ftClock').textContent =
-        p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds());
-    }
-    tick(); setInterval(tick, 1000);
+    (function clock(){
+      const tick = () => {
+        const d = new Date();
+        const p = n => String(n).padStart(2,'0');
+        document.getElementById('ftClock').textContent =
+          p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds());
+      };
+      tick(); setInterval(tick, 1000);
+    })();
   </script>
-  <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
+  <style>@keyframes lbs-spin { to { transform: rotate(360deg); } }</style>
 </body>
 </html>
