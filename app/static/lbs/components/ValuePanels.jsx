@@ -80,16 +80,16 @@ function ValuesPanel({ values, phaseMode }) {
           <KpiCard label="Temperatura" value={values.temp} unit="°C" ico="thermometer-half" tone={values.temp > 50 ? 'err' : values.temp > 40 ? 'warn' : 'ok'} spark={values.spark_temp} />
           <KpiCard label="V. Salida"  value={values.v_out} unit="V (AC)" ico="plug" tone="l1" spark={values.spark_v_out} />
           <KpiCard label="Frecuencia" value={values.freq_in} unit="Hz" ico="activity" />
-          <KpiCard label="Corriente"  value={values.i_out || '18.4'} unit="A" ico="lightning" />
-          <KpiCard label="Modo"       value={values.mode_label || 'LÍNEA'} unit="" ico="power" tone={values.mode === 'online' ? 'ok' : 'warn'} />
+          <KpiCard label="Corriente"  value={values.i_out} unit="A" ico="lightning" />
+          <KpiCard label="Modo"       value={values.mode_label} unit="" ico="power" tone={values.mode === 'online' ? 'ok' : 'warn'} />
         </div>
 
         {phaseMode === 'three' && (
           <div className="kpi-grid" style={{ marginTop: 10 }}>
-            <KpiCard label="V. Entrada L2" value={values.v_in_l2 || '121.8'} unit="V" tone="l2" />
-            <KpiCard label="V. Entrada L3" value={values.v_in_l3 || '122.6'} unit="V" tone="l3" />
-            <KpiCard label="V. Salida L2"  value={values.v_out_l2 || '120.0'} unit="V" tone="l2" />
-            <KpiCard label="V. Salida L3"  value={values.v_out_l3 || '120.1'} unit="V" tone="l3" />
+            <KpiCard label="V. Entrada L2" value={values.v_in_l2} unit="V" tone="l2" />
+            <KpiCard label="V. Entrada L3" value={values.v_in_l3} unit="V" tone="l3" />
+            <KpiCard label="V. Salida L2"  value={values.v_out_l2} unit="V" tone="l2" />
+            <KpiCard label="V. Salida L3"  value={values.v_out_l3} unit="V" tone="l3" />
           </div>
         )}
 
@@ -105,9 +105,9 @@ function ValuesPanel({ values, phaseMode }) {
 }
 
 function LoadAnalysisPanel({ values }) {
-  // Donut: active vs reserve
+  // Donut: potencia aparente usada vs capacidad
   const cap = 6.0; // kVA capacity
-  const used = parseFloat(values.load_kva || '4.51');
+  const used = parseFloat(values.load_kva) || 0;
   const pct = Math.min(1, used / cap);
   const r = 48, c = 2 * Math.PI * r;
   const off = c * (1 - pct);
@@ -135,19 +135,19 @@ function LoadAnalysisPanel({ values }) {
           <div className="kv-grid" style={{ flex: 1 }}>
             <div className="kv">
               <label>FACTOR DE POTENCIA</label>
-              <div className="val">{values.pf || '0.99'}</div>
+              <div className="val">{values.pf}</div>
             </div>
             <div className="kv">
               <label>POT. ACTIVA</label>
-              <div className="val">{values.load_kw || '4.32'}<small>kW</small></div>
+              <div className="val">{values.load_kw}{values.load_kw !== '—' && <small>kW</small>}</div>
             </div>
             <div className="kv">
               <label>POT. APARENTE</label>
-              <div className="val">{values.load_kva || '4.51'}<small>kVA</small></div>
+              <div className="val">{values.load_kva}{values.load_kva !== '—' && <small>kVA</small>}</div>
             </div>
             <div className="kv">
               <label>AUTONOMÍA EST.</label>
-              <div className="val">{values.runtime || '38m'}<small>@ carga</small></div>
+              <div className="val">{values.runtime}{values.runtime !== '—' && <small>@ carga</small>}</div>
             </div>
           </div>
         </div>
@@ -169,11 +169,11 @@ function EnvironmentPanel({ values, alarms }) {
         <div className="kv-grid" style={{ marginBottom: 10 }}>
           <div className="kv">
             <label>TEMP. AMBIENTE</label>
-            <div className="val">{values.amb_temp || '24.6'}<small>°C</small></div>
+            <div className="val">{values.amb_temp}<small>°C</small></div>
           </div>
           <div className="kv">
             <label>HUMEDAD</label>
-            <div className="val">{values.amb_humidity || '52'}<small>% RH</small></div>
+            <div className="val">{values.amb_humidity}<small>% RH</small></div>
           </div>
           <div className="kv">
             <label>TEMP. UPS</label>
@@ -181,13 +181,13 @@ function EnvironmentPanel({ values, alarms }) {
           </div>
           <div className="kv">
             <label>TEMP. BATERÍA</label>
-            <div className="val">{values.bat_temp || '28.4'}<small>°C</small></div>
+            <div className="val">{values.bat_temp}<small>°C</small></div>
           </div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {alarms.length === 0 && (
             <div style={{ padding: '10px 12px', textAlign: 'center', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.10em' }}>
-              SIN ALARMAS ACTIVAS · ÚLTIMO INCIDENTE 14:22:08 (RESUELTO)
+              SIN ALARMAS ACTIVAS
             </div>
           )}
           {alarms.map((a, i) => (
@@ -212,7 +212,12 @@ function StatusLogPanel({ log }) {
       </div>
       <div className="eng-body" style={{ paddingTop: 8, paddingBottom: 8 }}>
         <div className="log">
-          {log.map((l, i) => (
+          {(!log || log.length === 0) && (
+            <div style={{ padding: '14px 12px', textAlign: 'center', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.10em' }}>
+              SIN EVENTOS REGISTRADOS
+            </div>
+          )}
+          {(log || []).map((l, i) => (
             <div key={i} className="log-line">
               <span className="ts">{l.ts}</span>
               <span className={"lvl " + l.lvl}>{l.lvl.toUpperCase()}</span>
@@ -227,10 +232,12 @@ function StatusLogPanel({ log }) {
 
 /* ─── 3-column flanks ────────────────────────────────── */
 function MiniRow({ label, value, unit, tone, ico }) {
+  const v = (value === undefined || value === null || value === '') ? '—' : value;
+  const showUnit = unit && v !== '—' && v !== 'N/D';
   return (
     <div className={"mini-row " + (tone || '')}>
       <span className="mini-label">{ico && <i className={"bi bi-" + ico}></i>}{label}</span>
-      <span className="mini-val">{value}{unit && <small>{unit}</small>}</span>
+      <span className="mini-val">{v}{showUnit && <small>{unit}</small>}</span>
     </div>
   );
 }
@@ -270,7 +277,7 @@ function InputStackPanel({ values, phaseMode }) {
           <MiniRow label="THD entrada" value={values.thd_in} unit="%" />
         </MiniBlock>
 
-        <MiniBlock title="Rectificador" ico="cpu" accent="acc-cyan" badge={values.eff_rect + '%'}>
+        <MiniBlock title="Rectificador" ico="cpu" accent="acc-cyan" badge={values.eff_rect === '—' ? '—' : values.eff_rect + '%'}>
           <MiniRow label="DC bus" value={values.dc_v_rect} unit="V DC" />
           <MiniRow label="DC corriente" value={values.dc_i} unit="A" />
           <MiniRow label="Eficiencia" value={values.eff_rect} unit="%" tone="ok" />
@@ -301,7 +308,7 @@ function OutputStackPanel({ values, phaseMode, alarms }) {
         </span>
       </div>
       <div className="eng-body stack-body">
-        <MiniBlock title="Inversor" ico="diagram-3" accent="acc-blue" badge={values.eff_inv + '%'}>
+        <MiniBlock title="Inversor" ico="diagram-3" accent="acc-blue" badge={values.eff_inv === '—' ? '—' : values.eff_inv + '%'}>
           {phaseMode === 'three' ? (
             <>
               <MiniRow label="V · L1" value={values.v_out}    unit="V" tone="l1" />
@@ -326,10 +333,10 @@ function OutputStackPanel({ values, phaseMode, alarms }) {
           <MiniRow label="Factor pot."   value={values.pf}       unit="" tone="ok" />
         </MiniBlock>
 
-        <MiniBlock title="Ambiente" ico="thermometer-half" accent="acc-cyan">
-          <MiniRow label="Temp UPS"      value={values.temp}        unit="°C" />
-          <MiniRow label="Temp ambiente" value={values.amb_temp}    unit="°C" />
-          <MiniRow label="Humedad"       value={values.amb_humidity} unit="% RH" />
+        <MiniBlock title="Ambiente y batería" ico="thermometer-half" accent="acc-cyan">
+          <MiniRow label="Temp. ambiente"  value={values.amb_temp}   unit="°C" />
+          <MiniRow label="Total descargas" value={values.discharges} unit="ciclos" />
+          <MiniRow label="Temp. batería"   value={values.bat_temp}   unit="°C" />
         </MiniBlock>
       </div>
     </section>

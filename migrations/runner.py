@@ -34,10 +34,19 @@ def run_migrations(pool):
             cur.execute("SELECT version FROM schema_migrations")
             applied = {_row_to_version(r) for r in cur.fetchall()}
 
-    # 2. Descubrir archivos.
+    # 2. Descubrir archivos. Orden numérico por prefijo (001, 002, ... 010,
+    #    011) para evitar el orden lexicográfico erróneo si conviven nombres
+    #    como "01_x.sql" y "001_x.sql".
+    def _mig_key(fname):
+        prefix = fname.split('_', 1)[0]
+        try:
+            return (0, int(prefix))
+        except ValueError:
+            return (1, fname)  # sin prefijo numérico: al final, alfabético
+
     migration_files = sorted(
-        f for f in os.listdir(MIGRATIONS_DIR)
-        if f.endswith('.sql')
+        (f for f in os.listdir(MIGRATIONS_DIR) if f.endswith('.sql')),
+        key=_mig_key,
     )
 
     # 3. Aplicar pendientes en transacciones explícitas.

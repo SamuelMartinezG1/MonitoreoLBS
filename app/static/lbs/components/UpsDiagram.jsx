@@ -54,7 +54,9 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
     battery: { txt: 'EN BATERÍA · RESPALDO',       cls: 'warn', tone: 'rgba(255,176,0,0.10)',  stroke: 'var(--warn)' },
     bypass:  { txt: 'BYPASS ESTÁTICO · MAINS DIRECT', cls: 'warn', tone: 'rgba(255,176,0,0.10)', stroke: 'var(--warn)' },
     fault:   { txt: 'FALLA · INVERSOR',            cls: 'err',  tone: 'rgba(255,58,92,0.10)',  stroke: 'var(--err)' },
-  }[m];
+    offline: { txt: 'SIN CONEXIÓN · EQUIPO NO RESPONDE', cls: 'err', tone: 'rgba(255,58,92,0.10)', stroke: 'var(--err)' },
+    nodata:  { txt: 'SIN DATOS · ESPERANDO MONITOREO',   cls: 'warn', tone: 'rgba(138,138,149,0.10)', stroke: 'var(--text-dim)' },
+  }[m] || { txt: 'SIN DATOS', cls: 'warn', tone: 'rgba(138,138,149,0.10)', stroke: 'var(--text-dim)' };
 
   const batPct  = Math.max(0, Math.min(100, parseFloat(values.bat_pct) || 0));
   const batCls  = batPct <= 20 ? 'err' : batPct <= 50 ? 'warn' : '';
@@ -107,7 +109,7 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
       <div className="ups-diagram-head">
         <div className="ups-title-wrap">
           <h2>Diagrama de flujo · UPS Online doble conversión</h2>
-          <span className="sub">TOPOLOGÍA 3+1 · BATT BANK · FASES {phaseMode === 'three' ? 'TRIFÁSICAS' : 'MONOFÁSICAS'} · EFICIENCIA {values.efficiency || '94.6'}%</span>
+          <span className="sub">TOPOLOGÍA 3+1 · BATT BANK · FASES {phaseMode === 'three' ? 'TRIFÁSICAS' : 'MONOFÁSICAS'} · EFICIENCIA {values.efficiency || '—'}%</span>
         </div>
         <span className={"pill " + statusInfo.cls} style={{ background: statusInfo.tone, borderColor: statusInfo.stroke, color: statusInfo.stroke }}>
           <span className="dot"></span>
@@ -224,8 +226,8 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
           <g className={nodeCls('rect')}>
             <Glass x={240} y={180} w={170} h={150} v="blue" />
             <text x="258" y="206" className="n-id">N02 · RECT</text>
-            <text x="325" y="240" className="n-val" textAnchor="middle">{values.dc_v_rect || '432.4'}</text>
-            <text x="325" y="258" className="n-unit" textAnchor="middle">V DC · η {values.eff_rect || '97.8'}%</text>
+            <text x="325" y="240" className="n-val" textAnchor="middle">{values.dc_v_rect || '—'}</text>
+            <text x="325" y="258" className="n-unit" textAnchor="middle">V DC · η {values.eff_rect || '—'}%</text>
             <g transform="translate(325,288)" className="n-icon">
               <rect x="-16" y="-16" width="32" height="32" rx="3" fill="none" />
               <line x1="-16" y1="16" x2="16" y2="-16" />
@@ -240,8 +242,8 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
           <g className={nodeCls('dcbus')}>
             <Glass x={460} y={180} w={170} h={150} v="cyan" />
             <text x="478" y="206" className="n-id">N03 · DC BUS</text>
-            <text x="545" y="240" className="n-val" textAnchor="middle">{values.dc_v || '432.4'}</text>
-            <text x="545" y="258" className="n-unit" textAnchor="middle">V DC · {values.dc_i || '24.8'} A</text>
+            <text x="545" y="240" className="n-val" textAnchor="middle">{values.dc_v || '—'}</text>
+            <text x="545" y="258" className="n-unit" textAnchor="middle">V DC · {values.dc_i || '—'} A</text>
             <g transform="translate(545,290)">
               <line x1="-32" y1="-7" x2="32" y2="-7" stroke="rgba(34,225,255,0.95)" strokeWidth="2.4"
                     style={{ filter: 'drop-shadow(0 0 6px var(--cyan-glow))' }} />
@@ -257,7 +259,7 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
             <Glass x={680} y={180} w={170} h={150} v="blue" />
             <text x="698" y="206" className="n-id">N04 · INV</text>
             <text x="765" y="240" className="n-val" textAnchor="middle">{values.v_out}</text>
-            <text x="765" y="258" className="n-unit" textAnchor="middle">V · η {values.eff_inv || '96.4'}%</text>
+            <text x="765" y="258" className="n-unit" textAnchor="middle">V · η {values.eff_inv || '—'}%</text>
             <g transform="translate(765,288)" className="n-icon">
               <rect x="-16" y="-16" width="32" height="32" rx="3" fill="none" />
               <line x1="-16" y1="16" x2="16" y2="-16" />
@@ -273,7 +275,7 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
             <Glass x={900} y={180} w={170} h={150} v="blue" />
             <text x="918" y="206" className="n-id">N05 · OUT</text>
             <text x="985" y="240" className="n-val" textAnchor="middle">{values.v_out}</text>
-            <text x="985" y="258" className="n-unit" textAnchor="middle">V · {values.i_out || '18.4'} A</text>
+            <text x="985" y="258" className="n-unit" textAnchor="middle">V · {values.i_out || '—'} A</text>
             {/* Load arc gauge inside */}
             <g transform="translate(985,294)">
               <circle cx="0" cy="0" r="22" className="arc-bg" />
@@ -290,8 +292,8 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
           <g className={nodeCls('load')}>
             <Glass x={1120} y={180} w={170} h={150} v="blue" />
             <text x="1138" y="206" className="n-id">N06 · LOAD</text>
-            <text x="1205" y="240" className="n-val" textAnchor="middle">{values.load_kw || '4.32'}</text>
-            <text x="1205" y="258" className="n-unit" textAnchor="middle">kW · {values.load_kva || '4.51'} kVA</text>
+            <text x="1205" y="240" className="n-val" textAnchor="middle">{values.load_kw || '—'}</text>
+            <text x="1205" y="258" className="n-unit" textAnchor="middle">kW · {values.load_kva || '—'} kVA</text>
             <g transform="translate(1205,290)" className="n-icon">
               <rect x="-22" y="-16" width="44" height="11" rx="1.4" fill="none" strokeWidth="1.4"/>
               <rect x="-22" y="-3"  width="44" height="11" rx="1.4" fill="none" strokeWidth="1.4"/>
@@ -345,7 +347,7 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
             <rect x="475" y="487" width={(batPct/100)*140} height="6" rx="3"
                   className={"batt-fill " + batCls} />
             <text x="545" y="510" className="n-label" textAnchor="middle">
-              {values.bat_v || '54.6'} V · {values.runtime || '38m 12s'}
+              {values.bat_v || '—'} V · {values.runtime || '—'}
             </text>
           </g>
         </svg>

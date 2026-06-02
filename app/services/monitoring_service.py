@@ -124,6 +124,9 @@ class MonitoringService(threading.Thread):
             logger.error("Error leyendo monitoreo_config: %s", e)
             return
 
+        # Poda de clientes SNMP caducados / de dispositivos eliminados
+        self._evict_stale_snmp_clients()
+
         snmp_devices = [d for d in devices if d.get('protocolo') == 'snmp']
         if not snmp_devices:
             return
@@ -143,11 +146,40 @@ class MonitoringService(threading.Thread):
                 from app.services.pg_metrics import influx_service
                 influx_service.write_ups_data_batch(metrics_buffer)
             except Exception as e:
-                logger.debug("Error flushing metrics batch: %s", e)
+                logger.warning("Error flushing metrics batch: %s", e)
 
     # ------------------------------------------------------------------ #
     # Por dispositivo                                                     #
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _close_snmp_client(client):
+        """Cierra un cliente SNMP de forma best-effort (evita fugas de socket)."""
+        if client is None:
+            return
+        try:
+            closer = getattr(client, 'close', None)
+            if callable(closer):
+                closer()
+                return
+            engine = getattr(client, 'engine', None)
+            if engine is not None:
+                tdsp = getattr(engine, 'transportDispatcher', None)
+                if tdsp is not None:
+                    tdsp.closeDispatcher()
+        except Exception as e:
+            logger.debug("cerrando cliente SNMP: %s", e)
+
+    def _evict_stale_snmp_clients(self):
+        """Elimina y cierra clientes SNMP caducados o de dispositivos eliminados."""
+        now = time.monotonic()
+        for dev_id in list(self._snmp_cache.keys()):
+            client, _h, ts = self._snmp_cache[dev_id]
+            if (now - ts) >= self._snmp_ttl:
+                self._close_snmp_client(client)
+                self._snmp_cache.pop(dev_id, None)
+                self._last_metric_write.pop(dev_id, None)
+                self._last_history_write.pop(dev_id, None)
+
     def _get_snmp_client(self, dev_id, params_hash):
         """Devuelve un cliente SNMP cacheado o lo crea si caducó / cambió."""
         cached = self._snmp_cache.get(dev_id)
@@ -156,6 +188,8 @@ class MonitoringService(threading.Thread):
             client, h, ts = cached
             if h == params_hash and (now - ts) < self._snmp_ttl:
                 return client
+            # Cambió la config o caducó: cerrar el anterior antes de reemplazar
+            self._close_snmp_client(client)
         client = _build_snmp_client(params_hash)
         self._snmp_cache[dev_id] = (client, params_hash, now)
         return client
@@ -169,7 +203,18 @@ class MonitoringService(threading.Thread):
         if snmp_version_raw in (None, ''):
             snmp_version = 1
         else:
-            snmp_version = int(snmp_version_raw)
+            try:
+                snmp_version = int(snmp_version_raw)
+            except (TypeError, ValueError):
+                snmp_version = 1
+            # pysnmp mpModel solo admite 0 (v1) o 1 (v2c). Cualquier otro
+            # valor se normaliza a v2c para evitar fallos silenciosos.
+            if snmp_version not in (0, 1, 2):
+                logger.warning(
+                    "snmp_version inválida (%r) en dev %s; usando v2c",
+                    snmp_version_raw, dev.get('id'),
+                )
+                snmp_version = 1
 
         ups_type = dev.get('ups_type') or 'invt_enterprise'
         dev_id = dev['id']
@@ -238,7 +283,7 @@ class MonitoringService(threading.Thread):
                     if grabacion:
                         self.db.insertar_dato_grabacion(grabacion['id'], data)
                 except Exception as e:
-                    logger.debug("Persist telemetría %s: %s", ip, e)
+                    logger.warning("Persist telemetría %s: %s", ip, e)
 
                 # Encolar para batch insert a ups_metrics
                 _accumulate_metric_rows(
@@ -255,7 +300,7 @@ class MonitoringService(threading.Thread):
                 try:
                     self.db.guardar_punto_historial(dev_id, data)
                 except Exception as e:
-                    logger.debug("Persist historial %s: %s", ip, e)
+                    logger.warning("Persist historial %s: %s", ip, e)
         else:
             # Offline: marca status=0 en métricas cada N seg para historial de disponibilidad
             last_m = self._last_metric_write.get(dev_id, 0.0)
@@ -266,6 +311,19 @@ class MonitoringService(threading.Thread):
                     dev.get('sitio_nombre', ''), ups_type,
                     'status_code', 0.0,
                 ))
+
+            # Punto 'offline' en el historial: mediciones NULL + power_mode
+            # 'offline'. Da una línea de tiempo continua (sin huecos que el
+            # gráfico "salte" al reconectar). (F5 de la auditoría.)
+            last_h = self._last_history_write.get(dev_id, 0.0)
+            if now - last_h >= self._history_interval:
+                self._last_history_write[dev_id] = now
+                try:
+                    self.db.guardar_punto_historial(
+                        dev_id, {'power_source': 'offline'}
+                    )
+                except Exception as e:
+                    logger.warning("Persist historial offline %s: %s", ip, e)
 
     # ------------------------------------------------------------------ #
     # Perfil OID custom                                                   #
@@ -313,6 +371,8 @@ class MonitoringService(threading.Thread):
                 'frecuencia_in':  'input_frequency',
                 'frecuencia_out': 'output_frequency',
                 'voltaje_bateria': 'battery_voltage',
+                'temperatura_ambiente': 'ambient_temperature',
+                'ciclos_descarga': 'battery_cycles',
             }
             standardized: dict = {}
             for name, val in data.items():
@@ -344,6 +404,7 @@ _METRIC_KEYS = (
     'frecuencia_in', 'frecuencia_out',
     'corriente_out_l1', 'corriente_out_l2', 'corriente_out_l3',
     'carga_pct', 'bateria_pct', 'voltaje_bateria', 'temperatura',
+    'temperatura_ambiente', 'ciclos_descarga',
     'power_factor', 'active_power', 'apparent_power', 'battery_remain_time',
 )
 
@@ -377,32 +438,40 @@ def _accumulate_metric_rows(buffer, dev_id, name, ip, sitio, ups_type, mapped):
 
 def _map_data_to_frontend(data, ups_type):
     """Mapea respuesta SNMP a los nombres que usa el frontend / DB."""
+    # NOTA: los campos de medición usan None (no 0) cuando el valor falta.
+    # Guardar 0 produciría caídas/ceros falsos en el diagrama y alarmas
+    # inexistentes. _accumulate_metric_rows omite None y la columna REAL
+    # en BD acepta NULL. _check_snmp_alarms ya protege con `or 0`.
     return {
         # Voltajes entrada
-        'voltaje_in_l1': data.get('input_voltage_l1', 0),
-        'voltaje_in_l2': data.get('input_voltage_l2', 0),
-        'voltaje_in_l3': data.get('input_voltage_l3', 0),
-        'frecuencia_in': data.get('input_frequency', 0),
+        'voltaje_in_l1': data.get('input_voltage_l1'),
+        'voltaje_in_l2': data.get('input_voltage_l2'),
+        'voltaje_in_l3': data.get('input_voltage_l3'),
+        'frecuencia_in': data.get('input_frequency'),
         # Voltajes salida
-        'voltaje_out_l1': data.get('output_voltage_l1', 0),
-        'voltaje_out_l2': data.get('output_voltage_l2', 0),
-        'voltaje_out_l3': data.get('output_voltage_l3', 0),
-        'frecuencia_out': data.get('output_frequency', 0),
+        'voltaje_out_l1': data.get('output_voltage_l1'),
+        'voltaje_out_l2': data.get('output_voltage_l2'),
+        'voltaje_out_l3': data.get('output_voltage_l3'),
+        'frecuencia_out': data.get('output_frequency'),
         # Corrientes salida
-        'corriente_out_l1': data.get('output_current_l1', data.get('output_current', 0)),
-        'corriente_out_l2': data.get('output_current_l2', 0),
-        'corriente_out_l3': data.get('output_current_l3', 0),
+        'corriente_out_l1': data.get('output_current_l1', data.get('output_current')),
+        'corriente_out_l2': data.get('output_current_l2'),
+        'corriente_out_l3': data.get('output_current_l3'),
         # Potencia
-        'power_factor':   data.get('power_factor', 0),
-        'active_power':   data.get('active_power', 0),
-        'apparent_power': data.get('apparent_power', 0),
+        'power_factor':   data.get('power_factor'),
+        'active_power':   data.get('active_power'),
+        'apparent_power': data.get('apparent_power'),
         # Carga / batería
-        'carga_pct':       data.get('output_load', 0),
-        'bateria_pct':     data.get('battery_capacity', 0),
-        'voltaje_bateria': data.get('battery_voltage', 0),
-        'corriente_bateria': data.get('battery_current', 0),
-        'temperatura':     data.get('temperature', 0),
-        'battery_remain_time': data.get('battery_runtime', 0),
+        'carga_pct':       data.get('output_load'),
+        'bateria_pct':     data.get('battery_capacity'),
+        'voltaje_bateria': data.get('battery_voltage'),
+        'corriente_bateria': data.get('battery_current'),
+        'temperatura':     data.get('temperature'),
+        'battery_remain_time': data.get('battery_runtime'),
+        # Temperatura ambiente del gabinete/sala (None si el equipo no la expone)
+        'temperatura_ambiente': data.get('ambient_temperature'),
+        # Total de ciclos de descarga de la batería (contador acumulado)
+        'ciclos_descarga': data.get('battery_cycles'),
         # Estado
         'power_mode':     data.get('power_source', ''),
         'battery_status': data.get('battery_status', ''),

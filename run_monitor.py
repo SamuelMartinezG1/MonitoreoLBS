@@ -22,7 +22,9 @@ import eventlet
 # select sí se patchean (Socket.IO los necesita).
 eventlet.monkey_patch(thread=False)
 
-from flask import Flask, jsonify
+from urllib.parse import urlparse
+
+from flask import Flask, jsonify, request
 
 from app.extensions import socketio
 from app.services.monitoring_service import MonitoringService
@@ -47,22 +49,25 @@ def _start_cleanup_scheduler(db: GestorDB):
     """Programa el barrido de telemetría / historial / métricas cada hora."""
     from apscheduler.schedulers.background import BackgroundScheduler
     from app.services.pg_metrics import influx_service
+    from app import config
 
-    history_days = int(os.environ.get('HISTORY_RETENTION_DAYS', 30))
+    history_days = config.HISTORY_RETENTION_DAYS
+    telemetry_min = config.TELEMETRY_RETENTION_MIN
+    interval_min = config.CLEANUP_INTERVAL_MIN
 
     def _job():
         try:
-            db.limpiar_telemetria_antigua(minutos=10)
+            db.limpiar_telemetria_antigua(minutos=telemetry_min)
             db.limpiar_historial_antiguo(dias=history_days)
             influx_service.cleanup_old()
         except Exception as e:
             logger.warning('cleanup job: %s', e)
 
     sched = BackgroundScheduler(daemon=True, timezone='UTC')
-    sched.add_job(_job, 'interval', minutes=60, id='lbs_cleanup',
+    sched.add_job(_job, 'interval', minutes=interval_min, id='lbs_cleanup',
                   next_run_time=None, replace_existing=True)
     sched.start()
-    logger.info('Cleanup scheduler arrancado (cada 60 min)')
+    logger.info('Cleanup scheduler arrancado (cada %d min)', interval_min)
     return sched
 
 
@@ -107,6 +112,36 @@ def create_app() -> Flask:
     app.register_blueprint(diagnostic_bp)
     app.register_blueprint(zerotier_bp)
     app.register_blueprint(admin_bp)
+
+    # ---------------- Defensa CSRF (compatible con SPA) ---------------- #
+    # Sin tokens en el front: para métodos mutadores sobre /api/ se valida
+    # que el Origin/Referer (si el navegador lo envía) coincida con el host
+    # de la petición. Same-origin (la SPA) pasa siempre; un POST cross-site
+    # desde otra página es rechazado. Peticiones sin Origin/Referer (curl,
+    # health checks internos) no se bloquean. (S5 de la auditoría.)
+    _CSRF_METHODS = {'POST', 'PUT', 'PATCH', 'DELETE'}
+
+    @app.before_request
+    def _csrf_origin_guard():
+        if request.method not in _CSRF_METHODS:
+            return None
+        path = request.path or ''
+        if not path.startswith('/api/'):
+            return None
+        origin = request.headers.get('Origin') or request.headers.get('Referer')
+        if not origin:
+            return None  # cliente no-navegador: no aplica CSRF
+        try:
+            src_host = urlparse(origin).netloc.split('@')[-1]
+        except Exception:
+            src_host = ''
+        if src_host and src_host != request.host:
+            logger.warning(
+                'CSRF bloqueado: origin=%s host=%s path=%s',
+                src_host, request.host, path,
+            )
+            return jsonify({'error': 'Origen no permitido'}), 403
+        return None
 
     # ---------------- Cache headers para assets ---------------- #
     @app.after_request

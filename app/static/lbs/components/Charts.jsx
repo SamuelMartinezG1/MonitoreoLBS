@@ -9,7 +9,8 @@ function HistoryChart({ series, phaseMode }) {
   const [hover, setHover] = React.useState(null);
   const [view, setView] = React.useState('voltage'); // voltage | load | battery
 
-  const data = series[view];
+  const data = series[view] || [];
+  const empty = data.length === 0;
   // data: array of points {t, v_in, v_in_l2, v_in_l3, v_out, ...}
   const xs = data.map((_, i) => i);
   const allVals = [];
@@ -75,6 +76,12 @@ function HistoryChart({ series, phaseMode }) {
         ))}
       </div>
       <div className="chart-svg-wrap">
+        {empty && (
+          <div style={{ height: H * 0.6, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', fontSize: 12, letterSpacing: '0.12em' }}>
+            SIN DATOS HISTÓRICOS PARA EL PERIODO
+          </div>
+        )}
+        {!empty && (<>
         <svg
           viewBox={`0 0 ${W} ${H}`}
           preserveAspectRatio="none"
@@ -139,6 +146,7 @@ function HistoryChart({ series, phaseMode }) {
             ))}
           </div>
         )}
+        </>)}
       </div>
     </section>
   );

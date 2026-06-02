@@ -212,7 +212,8 @@ def snmp_walk_inventario():
 
         return jsonify({'success': True, 'results': walk_results, 'count': len(walk_results)})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        current_app.logger.error("inventario snmp-walk: %s", e)
+        return jsonify({'success': False, 'error': 'Error interno del servidor'})
 
 
 @inventario_bp.route('/api/inventario/oid-test', methods=['POST'])
@@ -281,7 +282,8 @@ def oid_test():
             return jsonify({'success': False, 'error': result['error']})
         return jsonify({'success': True, **result})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        current_app.logger.error("inventario endpoint: %s", e)
+        return jsonify({'success': False, 'error': 'Error interno del servidor'})
 
 
 @inventario_bp.route('/api/inventario/save-oid-profile', methods=['POST'])

@@ -33,7 +33,12 @@ zerotier_bp = Blueprint('zerotier', __name__)
 
 
 def _zterror(e: Exception, status: int = 500):
-    return jsonify({'success': False, 'error': str(e)}), status
+    # ZeroTierError trae mensajes de dominio seguros para el usuario;
+    # cualquier otra excepción se loguea y se devuelve genérica para no
+    # filtrar internals (S4 de la auditoría).
+    logger.error("ZeroTier error: %s", e)
+    msg = str(e) if isinstance(e, ZeroTierError) else 'Error interno del servidor'
+    return jsonify({'success': False, 'error': msg}), status
 
 
 # --------------------------------------------------------------------------- #

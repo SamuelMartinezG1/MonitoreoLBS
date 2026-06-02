@@ -61,7 +61,7 @@ def autoset_scan():
 
     except Exception as e:
         logger.error("Error en auto-detección de %s: %s", ip, e)
-        return jsonify({'status': 'error', 'mensaje': f'Error interno: {str(e)}'}), 500
+        return jsonify({'status': 'error', 'mensaje': 'Error interno del servidor'}), 500
 
 
 # =========================================================================
@@ -259,7 +259,7 @@ def ups_proxy(device_id, path):
         )
     except Exception as e:
         logger.error("Error en proxy UPS %s: %s", device_id, e)
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Error interno del servidor'}), 500
 
 
 # =========================================================================
@@ -484,6 +484,7 @@ def recording_csv(recording_id):
         'frecuencia_in', 'frecuencia_out',
         'corriente_out_l1', 'corriente_out_l2', 'corriente_out_l3',
         'carga_pct', 'bateria_pct', 'voltaje_bateria', 'temperatura',
+        'temperatura_ambiente', 'ciclos_descarga',
         'power_mode', 'estado',
     ]
 

@@ -48,13 +48,16 @@ UPS_MIB_OIDS = {
     'output_percent_load': '1.3.6.1.2.1.33.1.4.4.1.5.1',
 }
 
-# OIDs INVT complementarios (si existen)
+# OIDs INVT / INC complementarios (si existen)
 INVT_OIDS = {
     'invt_model': '1.3.6.1.4.1.56788.1.1.1.0',
     'invt_serial': '1.3.6.1.4.1.56788.1.1.2.0',
     'invt_input_voltage': '1.3.6.1.4.1.56788.1.3.1.2.1',
     'invt_output_voltage': '1.3.6.1.4.1.56788.1.4.1.2.1',
     'invt_battery_voltage': '1.3.6.1.4.1.56788.1.6.1.0',
+    # Ciclos de descarga de batería (EINC-MIB upsDataBattery.cycles .3.5.6).
+    # Es el contador de "total de descargas" del equipo cuando está disponible.
+    'invt_battery_cycles': '1.3.6.1.4.1.56788.1.1.1.3.5.6.0',
 }
 
 # Decodificadores
@@ -218,6 +221,14 @@ class UPSMIBClient:
             
             # Estado general
             'temperature': safe_int(raw.get('battery_temperature')),
+
+            # Temperatura ambiente: el UPS-MIB estándar (RFC 1628) no define un
+            # OID de temperatura ambiental, así que queda None salvo que se
+            # provea vía perfil OID personalizado (variable 'temperatura_ambiente').
+            'ambient_temperature': None,
+            # Total de ciclos de descarga de batería (contador del fabricante).
+            'battery_cycles': safe_int(raw['invt_battery_cycles'])
+                              if raw.get('invt_battery_cycles') is not None else None,
         }
         
         logger.info(f"✅ UPS-MIB {self.ip_address}: {data.get('output_voltage_l1')}V, "

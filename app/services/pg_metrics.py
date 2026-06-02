@@ -56,7 +56,7 @@ class PgMetricsService:
                 conninfo=self.dsn,
                 min_size=1,
                 max_size=int(os.environ.get('METRICS_POOL_MAX', 10)),
-                kwargs={'autocommit': True},
+                kwargs={'autocommit': True, 'options': '-c timezone=UTC'},
                 open=True,
             )
             logger.info("Conectado a PostgreSQL (pg_metrics)")
