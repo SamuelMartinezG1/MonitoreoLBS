@@ -30,6 +30,10 @@ services:
     image: postgres:15-alpine
     container_name: ${PROJECT_NAME:-lbs}-db
     restart: *restart
+    # Postgres LOCAL solo para uso standalone. El despliegue real usa la BD
+    # unificada (override monitoreo.override.yml), así que este servicio NO
+    # arranca por defecto. Para un stack independiente: `--profile standalone`.
+    profiles: ["standalone"]
     environment:
       POSTGRES_USER:     ${DB_USER:-guia_app}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-cambiame123}
@@ -63,8 +67,9 @@ services:
     container_name: ${PROJECT_NAME:-lbs}-portal
     restart: *restart
     network_mode: host
-    depends_on:
-      db: { condition: service_healthy }
+    # Sin depends_on del `db` local: el despliegue real usa la BD unificada y
+    # el pool de la app es lazy con reintentos. Para un stack standalone, el
+    # `db` se activa con `--profile standalone` y arranca en paralelo.
     volumes:
       # ZeroTier authtoken (opcional): permite que /api/zerotier/* hable con el
       # demonio del host. Si no existe el archivo, ZT no estará disponible.
