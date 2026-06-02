@@ -7,12 +7,59 @@ from flask import Blueprint, render_template, request, jsonify
 from flask_login import login_required
 from app.permisos import permiso_requerido
 import asyncio
+import ipaddress
+import re
 import socket
 import subprocess
 import platform
 from datetime import datetime
 
 diagnostic_bp = Blueprint('diagnostic', __name__)
+
+# --------------------------------------------------------------------------- #
+# Validación de entrada (defensa de inyección de argumentos / SSRF básica)     #
+# --------------------------------------------------------------------------- #
+_HOSTNAME_RE = re.compile(r'^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}'
+                          r'(?:\.[A-Za-z0-9-]{1,63})*$')
+_OID_RE = re.compile(r'^\.?\d+(\.\d+)*$')
+
+
+def _valid_host(value):
+    """Acepta solo IPv4/IPv6 válida o hostname; rechaza vacío y flags (-x)."""
+    if not value or not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or value.startswith('-'):
+        return None
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        pass
+    return value if _HOSTNAME_RE.match(value) else None
+
+
+def _valid_port(value, default=None):
+    """Devuelve int de puerto en rango 1..65535 o None si inválido."""
+    try:
+        p = int(value)
+    except (TypeError, ValueError):
+        return default
+    return p if 1 <= p <= 65535 else default
+
+
+def _valid_slave_id(value, default=1):
+    try:
+        s = int(value)
+    except (TypeError, ValueError):
+        return default
+    return s if 0 <= s <= 247 else default
+
+
+def _valid_oid(value):
+    if not value or not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value if _OID_RE.match(value) else None
 
 
 # NOTE: la vista de /diagnostico ahora la sirve `lbs_bp` con el nuevo diseño.
@@ -24,12 +71,12 @@ diagnostic_bp = Blueprint('diagnostic', __name__)
 @permiso_requerido('herramientas')
 def test_ping():
     """Test de ping a una IP"""
-    data = request.json
-    ip = data.get('ip', '')
-    
+    data = request.json or {}
+    ip = _valid_host(data.get('ip', ''))
+
     if not ip:
-        return jsonify({'error': 'IP requerida'}), 400
-    
+        return jsonify({'error': 'IP o host inválido'}), 400
+
     try:
         # Determinar comando según OS
         param = '-n' if platform.system().lower() == 'windows' else '-c'
@@ -69,18 +116,18 @@ def test_ping():
 @permiso_requerido('herramientas')
 def test_port():
     """Test de conectividad a un puerto específico"""
-    data = request.json
-    ip = data.get('ip', '')
-    port = data.get('port', 0)
-    
+    data = request.json or {}
+    ip = _valid_host(data.get('ip', ''))
+    port = _valid_port(data.get('port', 0))
+
     if not ip or not port:
-        return jsonify({'error': 'IP y puerto requeridos'}), 400
-    
+        return jsonify({'error': 'IP/host o puerto inválido'}), 400
+
     try:
         # Crear socket con timeout
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(3)
-        
+
         start_time = datetime.now()
         result = sock.connect_ex((ip, int(port)))
         end_time = datetime.now()
@@ -129,13 +176,13 @@ def test_port():
 @permiso_requerido('herramientas')
 def test_snmp():
     """Test de conexión SNMP"""
-    data = request.json
-    ip = data.get('ip', '')
+    data = request.json or {}
+    ip = _valid_host(data.get('ip', ''))
     community = data.get('community', 'public')
-    port = data.get('port', 161)
-    
+    port = _valid_port(data.get('port', 161), default=161)
+
     if not ip:
-        return jsonify({'error': 'IP requerida'}), 400
+        return jsonify({'error': 'IP o host inválido'}), 400
     
     try:
         # Importar el cliente SNMP
@@ -213,13 +260,13 @@ def test_snmp():
 @permiso_requerido('herramientas')
 def test_modbus():
     """Test de conexión Modbus TCP"""
-    data = request.json
-    ip = data.get('ip', '')
-    port = data.get('port', 502)
-    slave_id = data.get('slave_id', 1)
-    
+    data = request.json or {}
+    ip = _valid_host(data.get('ip', ''))
+    port = _valid_port(data.get('port', 502), default=502)
+    slave_id = _valid_slave_id(data.get('slave_id', 1))
+
     if not ip:
-        return jsonify({'error': 'IP requerida'}), 400
+        return jsonify({'error': 'IP o host inválido'}), 400
     
     try:
         from pymodbus.client import ModbusTcpClient
@@ -497,15 +544,21 @@ def snmp_autodetect():
 @permiso_requerido('herramientas')
 def snmp_walk():
     """SNMP Walk (GetNext) hasta 50 OIDs. Async interno, wrapped sync."""
-    data = request.json
-    ip = data.get('ip')
-    port = int(data.get('port', 161))
+    data = request.json or {}
+    ip = _valid_host(data.get('ip'))
+    port = _valid_port(data.get('port', 161), default=161)
     community = data.get('community', 'public')
-    version = int(data.get('version', 0))
-    root_oid_str = data.get('oid', '1.3.6.1.2.1')
+    try:
+        version = int(data.get('version', 0))
+    except (TypeError, ValueError):
+        version = 0
+    version = version if version in (0, 1) else 0
+    root_oid_str = _valid_oid(data.get('oid', '1.3.6.1.2.1'))
 
     if not ip:
-        return jsonify({'success': False, 'error': 'IP requerida'}), 400
+        return jsonify({'success': False, 'error': 'IP o host inválido'}), 400
+    if not root_oid_str:
+        return jsonify({'success': False, 'error': 'OID inválido'}), 400
 
     try:
         from pysnmp.hlapi.v3arch.asyncio import (
@@ -562,15 +615,19 @@ def snmp_walk():
 @permiso_requerido('herramientas')
 def snmp_get():
     """GET de un OID. Async interno, wrapped sync (Flask no awaita coroutines)."""
-    data = request.json
-    ip = data.get('ip')
-    port = int(data.get('port', 161))
+    data = request.json or {}
+    ip = _valid_host(data.get('ip'))
+    port = _valid_port(data.get('port', 161), default=161)
     community = data.get('community', 'public')
-    version = int(data.get('version', 0))
-    oid_str = data.get('oid', '')
+    try:
+        version = int(data.get('version', 0))
+    except (TypeError, ValueError):
+        version = 0
+    version = version if version in (0, 1) else 0
+    oid_str = _valid_oid(data.get('oid', ''))
 
     if not ip or not oid_str:
-        return jsonify({'success': False, 'error': 'IP y OID requeridos'}), 400
+        return jsonify({'success': False, 'error': 'IP/host u OID inválido'}), 400
 
     try:
         from pysnmp.hlapi.v3arch.asyncio import (
