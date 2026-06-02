@@ -35,7 +35,14 @@ class _Pool:
                 conninfo=self.dsn,
                 min_size=int(os.environ.get('DB_POOL_MIN', 2)),
                 max_size=int(os.environ.get('DB_POOL_MAX', 20)),
-                kwargs={'autocommit': True, 'row_factory': dict_row},
+                # options=-c timezone=UTC: fuerza UTC en cada sesión para
+                # evitar desfases de ±1 día entre NOW() del servidor y el
+                # scheduler/consultas (F6 de la auditoría).
+                kwargs={
+                    'autocommit': True,
+                    'row_factory': dict_row,
+                    'options': '-c timezone=UTC',
+                },
                 open=True,
             )
         return self._pool
@@ -321,8 +328,9 @@ class GestorDB:
                         frecuencia_in, frecuencia_out,
                         corriente_out_l1, corriente_out_l2, corriente_out_l3,
                         carga_pct, bateria_pct, voltaje_bateria, temperatura,
-                        power_mode, estado
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        power_mode, estado,
+                        temperatura_ambiente, ciclos_descarga
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (
                         device_id,
@@ -333,6 +341,7 @@ class GestorDB:
                         datos.get('output_load'), datos.get('battery_capacity'), datos.get('battery_voltage'),
                         datos.get('temperature'),
                         datos.get('power_source'), datos.get('estado', 'online'),
+                        datos.get('ambient_temperature'), datos.get('battery_cycles'),
                     ),
                 )
                 return True
@@ -351,6 +360,7 @@ class GestorDB:
                      WHERE device_id = %s
                        AND timestamp >= NOW() - make_interval(mins => %s)
                      ORDER BY timestamp ASC
+                     LIMIT 20000
                     """,
                     (device_id, minutos),
                 )
@@ -391,7 +401,10 @@ class GestorDB:
                            voltaje_out_l1, voltaje_out_l2, voltaje_out_l3,
                            frecuencia_in, frecuencia_out,
                            corriente_out_l1, corriente_out_l2, corriente_out_l3,
-                           carga_pct, bateria_pct, temperatura, timestamp
+                           carga_pct, bateria_pct, temperatura,
+                           voltaje_bateria, power_mode, power_factor,
+                           active_power, apparent_power, battery_remain_time,
+                           temperatura_ambiente, ciclos_descarga, timestamp
                       FROM ups_chart_history
                      WHERE device_id = %s
                      ORDER BY timestamp DESC
@@ -424,8 +437,9 @@ class GestorDB:
                         corriente_out_l1, corriente_out_l2, corriente_out_l3,
                         carga_pct, bateria_pct, temperatura,
                         voltaje_bateria, power_mode, power_factor,
-                        active_power, apparent_power, battery_remain_time
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        active_power, apparent_power, battery_remain_time,
+                        temperatura_ambiente, ciclos_descarga
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (
                         device_id,
@@ -436,6 +450,7 @@ class GestorDB:
                         datos.get('output_load'), datos.get('battery_capacity'), datos.get('temperature'),
                         datos.get('battery_voltage'), datos.get('power_source'), datos.get('power_factor'),
                         datos.get('active_power'), datos.get('apparent_power'), datos.get('battery_runtime'),
+                        datos.get('ambient_temperature'), datos.get('battery_cycles'),
                     ),
                 )
                 return True
@@ -455,11 +470,13 @@ class GestorDB:
                            corriente_out_l1, corriente_out_l2, corriente_out_l3,
                            carga_pct, bateria_pct,
                            voltaje_bateria, power_mode, power_factor,
-                           active_power, apparent_power, battery_remain_time
+                           active_power, apparent_power, battery_remain_time,
+                           temperatura_ambiente, ciclos_descarga
                       FROM ups_chart_history
                      WHERE device_id = %s
                        AND timestamp >= NOW() - make_interval(hours => %s)
                      ORDER BY timestamp ASC
+                     LIMIT 25000
                     """,
                     (device_id, horas),
                 )
@@ -472,7 +489,7 @@ class GestorDB:
             logger.warning("obtener_historial_device: %s", e)
             return []
 
-    def limpiar_historial_antiguo(self, dias: int = 30) -> int:
+    def limpiar_historial_antiguo(self, dias: int = 7) -> int:
         try:
             with self.pool.get_connection() as conn:
                 cur = conn.cursor()
@@ -647,6 +664,19 @@ class GestorDB:
         try:
             with self.pool.get_connection() as conn:
                 cur = conn.cursor()
+                # Garantiza UNA sola grabación activa por dispositivo:
+                # cierra cualquier grabación activa previa antes de crear la
+                # nueva (evita condiciones de carrera con doble clic / dos
+                # peticiones simultáneas). Refuerza el índice único parcial
+                # creado en la migración 009.
+                cur.execute(
+                    """
+                    UPDATE ups_recordings
+                       SET activa = FALSE, fin = NOW()
+                     WHERE device_id = %s AND activa = TRUE
+                    """,
+                    (device_id,),
+                )
                 cur.execute(
                     """
                     INSERT INTO ups_recordings (device_id, nombre, activa)
@@ -670,17 +700,25 @@ class GestorDB:
         try:
             with self.pool.get_connection() as conn:
                 cur = conn.cursor()
+                # Conteo separado del UPDATE: con idx_recording_data_rid el
+                # COUNT usa índice y no bloquea el UPDATE con un escaneo.
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM ups_recording_data "
+                    "WHERE recording_id = %s",
+                    (recording_id,),
+                )
+                _c = cur.fetchone()
+                muestras = (dict(_c).get('n') if _c else 0) or 0
                 cur.execute(
                     """
                     UPDATE ups_recordings
                        SET activa = FALSE,
                            fin = NOW(),
-                           muestras = (SELECT COUNT(*) FROM ups_recording_data
-                                       WHERE recording_id = %s)
+                           muestras = %s
                      WHERE id = %s
                     RETURNING id, device_id, nombre, inicio, fin, muestras, activa
                     """,
-                    (recording_id, recording_id),
+                    (muestras, recording_id),
                 )
                 row = cur.fetchone()
                 if row:
@@ -800,8 +838,9 @@ class GestorDB:
                         frecuencia_in, frecuencia_out,
                         corriente_out_l1, corriente_out_l2, corriente_out_l3,
                         carga_pct, bateria_pct, voltaje_bateria, temperatura,
-                        power_mode, estado
-                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        power_mode, estado,
+                        temperatura_ambiente, ciclos_descarga
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (
                         recording_id,
@@ -812,6 +851,7 @@ class GestorDB:
                         datos.get('output_load'), datos.get('battery_capacity'), datos.get('battery_voltage'),
                         datos.get('temperature'),
                         datos.get('power_source'), datos.get('estado', 'online'),
+                        datos.get('ambient_temperature'), datos.get('battery_cycles'),
                     ),
                 )
                 return True
@@ -819,16 +859,23 @@ class GestorDB:
             logger.debug("insertar_dato_grabacion: %s", e)
             return False
 
-    def obtener_datos_grabacion(self, recording_id):
+    def obtener_datos_grabacion(self, recording_id, limite=50000):
         try:
+            limite = max(1, min(int(limite), 200000))
             with self.pool.get_connection() as conn:
                 cur = conn.cursor()
                 cur.execute(
                     "SELECT * FROM ups_recording_data "
-                    "WHERE recording_id = %s ORDER BY timestamp ASC",
-                    (recording_id,),
+                    "WHERE recording_id = %s ORDER BY timestamp ASC "
+                    "LIMIT %s",
+                    (recording_id, limite),
                 )
                 rows = [dict(r) for r in cur.fetchall()]
+                if len(rows) >= limite:
+                    logger.warning(
+                        "obtener_datos_grabacion: grabación %s truncada a %d filas",
+                        recording_id, limite,
+                    )
                 for r in rows:
                     if r.get('timestamp'):
                         r['timestamp'] = r['timestamp'].isoformat()

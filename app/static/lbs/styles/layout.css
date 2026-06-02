@@ -172,7 +172,7 @@
 /* ═══════ TELEMETRY HERO ═══════ */
 .telemetry-hero {
   display: grid;
-  grid-template-columns: 1.6fr 1.2fr repeat(4, 1fr);
+  grid-template-columns: 1.5fr 1.15fr repeat(6, 1fr);
   gap: 14px;
   align-items: center;
   padding: 12px 18px;
