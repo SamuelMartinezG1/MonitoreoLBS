@@ -20,6 +20,7 @@ function Header({ deviceName, page, crumbs }) {
     { id: 'inventario',  label: 'Inventario',  ico: 'diagram-3',    href: URLS.inventario   || '/inventario' },
     { id: 'diagnostico', label: 'Diagnóstico', ico: 'tools',        href: URLS.diagnostico  || '/diagnostico' },
     { id: 'grabaciones', label: 'Grabaciones', ico: 'record-circle', href: URLS.grabaciones || '/grabaciones' },
+    { id: 'eventos',     label: 'Eventos',      ico: 'card-list',     href: URLS.eventos     || '/eventos' },
   ];
   if (isAdmin) {
     navItems.push({ id: 'admin', label: 'Admin', ico: 'shield-lock', href: URLS.admin || '/admin' });

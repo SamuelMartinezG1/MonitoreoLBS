@@ -500,3 +500,49 @@ def recording_csv(recording_id):
         mimetype='text/csv',
         headers={'Content-Disposition': f'attachment; filename="{name}"'},
     )
+
+
+# =========================================================================
+# LOG DE EVENTOS NATIVO DEL UPS (ups_event_log)
+# =========================================================================
+@monitoreo_bp.route('/api/monitoreo/eventos/<int:device_id>', methods=['GET'])
+@login_required
+@permiso_requerido('scada')
+def listar_eventos_ups(device_id):
+    """Historial de eventos que el propio UPS registra (cortes, descargas, bypass…)."""
+    db = current_app.db
+    try:
+        limit = min(int(request.args.get('limit', 500)), 2000)
+    except (TypeError, ValueError):
+        limit = 500
+    nivel = request.args.get('nivel') or None
+    eventos = db.obtener_eventos_ups(device_id, limit=limit, nivel=nivel)
+    for e in eventos:
+        if e.get('ts'):
+            e['ts'] = e['ts'].isoformat()
+        if e.get('created_at'):
+            e['created_at'] = e['created_at'].isoformat()
+    resumen = db.resumen_eventos_ups(device_id)
+    for k in ('desde', 'hasta'):
+        if resumen.get(k):
+            resumen[k] = resumen[k].isoformat()
+    return jsonify({'status': 'ok', 'eventos': eventos, 'resumen': resumen})
+
+
+@monitoreo_bp.route('/api/monitoreo/eventos/<int:device_id>/refresh', methods=['POST'])
+@login_required
+@permiso_requerido('scada')
+@requiere_rol('admin', 'tecnico')
+def refrescar_eventos_ups(device_id):
+    """Dispara la colecta del log de eventos del UPS bajo demanda (requiere alcance)."""
+    db = current_app.db
+    dev = next((d for d in db.obtener_monitoreo_ups() if d.get('id') == device_id), None)
+    if not dev:
+        return jsonify({'status': 'error', 'mensaje': 'Dispositivo no encontrado'}), 404
+    if not (dev.get('event_source') or '').strip():
+        return jsonify({'status': 'error',
+                        'mensaje': 'El dispositivo no tiene event_source configurado'}), 400
+    from app.services.event_log_collector import collect_device
+    eventos = collect_device(dev)
+    n = db.insertar_eventos_ups(device_id, eventos) if eventos else 0
+    return jsonify({'status': 'ok', 'colectados': len(eventos), 'insertados': n})

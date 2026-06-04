@@ -37,6 +37,7 @@ def _urls_for_react():
         'inventario':  url_for('lbs.inventario'),
         'diagnostico': url_for('lbs.diagnostico'),
         'grabaciones': url_for('lbs.grabaciones'),
+        'eventos':     url_for('lbs.eventos'),
         'admin':       url_for('lbs.admin'),
         'logout':      url_for('lbs.logout'),
         'assets':      url_for('static', filename='lbs/assets/'),
@@ -138,6 +139,12 @@ def monitoreo():
 @login_required
 def grabaciones():
     return render_template('lbs/grabaciones.html', urls=_urls_for_react())
+
+
+@lbs_bp.route('/eventos')
+@login_required
+def eventos():
+    return render_template('lbs/eventos.html', urls=_urls_for_react())
 
 
 @lbs_bp.route('/admin')

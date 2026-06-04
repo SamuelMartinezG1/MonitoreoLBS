@@ -480,11 +480,20 @@ class ModbusMonitor:
             last_m = self._last_metric_write.get(dev_id, 0.0)
             if now - last_m >= self._metrics_interval:
                 self._last_metric_write[dev_id] = now
+                # Persistir con los MISMOS nombres de métrica que el path SNMP
+                # (voltaje_salida, bateria_porcentaje, carga_porcentaje,
+                # frecuencia_entrada/salida…). Sin esto, UPS Modbus guardaban
+                # voltaje_out_l1/bateria_pct/carga_pct y el SCADA —que lee los
+                # nombres estilo-SNMP— no mostraba su telemetría.
+                # Import diferido: monitoring_service ya importa ModbusMonitor
+                # de este módulo, así que un import top-level sería circular.
+                from app.services.monitoring_service import _METRIC_RENAME
                 rows = []
                 for key in _METRIC_KEYS:
                     val = mapped.get(key)
                     if _is_numeric(val):
-                        rows.append((dev_id, name, ip, sitio, ups_type, key, float(val)))
+                        metric_name = _METRIC_RENAME.get(key, key)
+                        rows.append((dev_id, name, ip, sitio, ups_type, metric_name, float(val)))
                 if rows:
                     with buffer_lock:
                         metrics_buffer.extend(rows)

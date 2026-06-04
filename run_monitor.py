@@ -63,11 +63,25 @@ def _start_cleanup_scheduler(db: GestorDB):
         except Exception as e:
             logger.warning('cleanup job: %s', e)
 
+    # Colecta periódica del LOG DE EVENTOS nativo de los UPS (event_source).
+    # Corre fuera del polling rápido; depende de alcance de red al UPS.
+    event_min = int(os.environ.get('EVENT_LOG_INTERVAL_MIN', 15))
+
+    def _event_job():
+        try:
+            from app.services.event_log_collector import collect_all
+            collect_all(db)
+        except Exception as e:
+            logger.warning('event_log job: %s', e)
+
     sched = BackgroundScheduler(daemon=True, timezone='UTC')
     sched.add_job(_job, 'interval', minutes=interval_min, id='lbs_cleanup',
                   next_run_time=None, replace_existing=True)
+    sched.add_job(_event_job, 'interval', minutes=event_min, id='lbs_event_log',
+                  next_run_time=None, replace_existing=True)
     sched.start()
-    logger.info('Cleanup scheduler arrancado (cada %d min)', interval_min)
+    logger.info('Cleanup scheduler arrancado (cleanup %d min, event-log %d min)',
+                interval_min, event_min)
     return sched
 
 

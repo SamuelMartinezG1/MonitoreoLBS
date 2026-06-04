@@ -148,6 +148,94 @@ class GestorDB:
             return False
 
     # ====================================================================== #
+    # Log de eventos NATIVO del UPS (ups_event_log)                           #
+    # ====================================================================== #
+    def insertar_eventos_ups(self, device_id, eventos):
+        """Inserta eventos del UPS con dedupe (ON CONFLICT DO NOTHING).
+        `eventos`: lista de dicts {ts, fuente, evento, nivel, raw}.
+        Devuelve el número de filas realmente insertadas."""
+        if not eventos:
+            return 0
+        insertados = 0
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                for ev in eventos:
+                    if not ev.get('evento'):
+                        continue
+                    cur.execute(
+                        """
+                        INSERT INTO ups_event_log (device_id, ts, fuente, evento, nivel, raw)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (device_id, ts, evento) DO NOTHING
+                        """,
+                        (device_id, ev.get('ts'), ev.get('fuente'),
+                         ev['evento'], ev.get('nivel', 'info'), ev.get('raw')),
+                    )
+                    insertados += cur.rowcount or 0
+            return insertados
+        except Exception as e:
+            logger.error("insertar_eventos_ups: %s", e)
+            return insertados
+
+    def obtener_eventos_ups(self, device_id, limit=500, nivel=None):
+        """Eventos de un UPS, más recientes primero. Filtro opcional por nivel."""
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                if nivel:
+                    cur.execute(
+                        """
+                        SELECT id, device_id, ts, fuente, evento, nivel, raw, created_at
+                          FROM ups_event_log
+                         WHERE device_id = %s AND nivel = %s
+                         ORDER BY ts DESC NULLS LAST, id DESC
+                         LIMIT %s
+                        """,
+                        (device_id, nivel, limit),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, device_id, ts, fuente, evento, nivel, raw, created_at
+                          FROM ups_event_log
+                         WHERE device_id = %s
+                         ORDER BY ts DESC NULLS LAST, id DESC
+                         LIMIT %s
+                        """,
+                        (device_id, limit),
+                    )
+                return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            logger.error("obtener_eventos_ups: %s", e)
+            return []
+
+    def resumen_eventos_ups(self, device_id):
+        """Conteo por nivel + total de descargas (eventos 'discharg'/'EOD')."""
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT
+                        COUNT(*)                                              AS total,
+                        COUNT(*) FILTER (WHERE nivel = 'critical')            AS criticos,
+                        COUNT(*) FILTER (WHERE nivel = 'warning')             AS warnings,
+                        COUNT(*) FILTER (WHERE evento ILIKE '%%discharg%%')   AS descargas,
+                        COUNT(*) FILTER (WHERE evento ILIKE '%%EOD%%')        AS eod,
+                        MIN(ts) AS desde, MAX(ts) AS hasta
+                      FROM ups_event_log
+                     WHERE device_id = %s
+                    """,
+                    (device_id,),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else {}
+        except Exception as e:
+            logger.error("resumen_eventos_ups: %s", e)
+            return {}
+
+    # ====================================================================== #
     # Sitios                                                                  #
     # ====================================================================== #
     def obtener_sitios(self):
