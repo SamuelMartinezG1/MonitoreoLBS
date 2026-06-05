@@ -94,6 +94,10 @@ services:
       METRICS_SAMPLE_INTERVAL_S: ${METRICS_SAMPLE_INTERVAL_S:-30}
       HISTORY_SAMPLE_INTERVAL_S: ${HISTORY_SAMPLE_INTERVAL_S:-30}
       SNMP_CLIENT_TTL_S:         ${SNMP_CLIENT_TTL_S:-300}
+      # --- Timeouts de lectura (tolerantes a enlaces lentos: SIM/ZeroTier) ---
+      SNMP_TIMEOUT_S:            ${SNMP_TIMEOUT_S:-5}
+      SNMP_RETRIES:             ${SNMP_RETRIES:-2}
+      MODBUS_TIMEOUT_S:         ${MODBUS_TIMEOUT_S:-8}
       # --- Retención ---
       HISTORY_RETENTION_DAYS: ${HISTORY_RETENTION_DAYS:-30}
       METRICS_RETENTION_DAYS: ${METRICS_RETENTION_DAYS:-90}

@@ -4,6 +4,7 @@ Usa SOLO los OIDs detectados que funcionan en el dispositivo.
 Soporta sistemas MONOFÁSICOS y TRIFÁSICOS.
 """
 
+import os
 import logging
 from typing import Dict, Any
 from pysnmp.hlapi.v3arch.asyncio import (
@@ -12,6 +13,10 @@ from pysnmp.hlapi.v3arch.asyncio import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Timeouts tolerantes a enlaces lentos/intermitentes (configurables por entorno).
+_DEF_TIMEOUT = int(os.environ.get('SNMP_TIMEOUT_S', 5))
+_DEF_RETRIES = int(os.environ.get('SNMP_RETRIES', 2))
 
 # OIDs UPS-MIB RFC 1628 (solo los que detectamos que funcionan)
 UPS_MIB_OIDS = {
@@ -83,8 +88,8 @@ class UPSMIBClient:
     """Cliente SNMP para UPS-MIB estándar (monofásico/trifásico)."""
     
     def __init__(self, ip_address: str, port: int = 161,
-                 community: str = 'public', timeout: int = 2,
-                 retries: int = 1, mp_model: int = 1,
+                 community: str = 'public', timeout: int = None,
+                 retries: int = None, mp_model: int = 1,
                  include_invt: bool = True):
         """
         Args:
@@ -94,8 +99,8 @@ class UPSMIBClient:
         self.ip_address = ip_address
         self.community = community
         self.port = port
-        self.timeout = timeout
-        self.retries = retries
+        self.timeout = _DEF_TIMEOUT if timeout is None else timeout
+        self.retries = _DEF_RETRIES if retries is None else retries
         self.mp_model = mp_model
         self.include_invt = include_invt
         self.engine = SnmpEngine()

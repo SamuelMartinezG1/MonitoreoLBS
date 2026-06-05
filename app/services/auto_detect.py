@@ -6,6 +6,7 @@ Escanea un dispositivo por IP y detecta protocolo, tipo, fases, community, etc.
 Usa subprocess con snmpget del sistema (paquete snmp instalado en Docker).
 """
 
+import os
 import subprocess
 import socket
 import logging
@@ -25,7 +26,7 @@ def extraer_numero_sitio(ip: str) -> int:
     return 0
 
 
-def _ping(ip: str, timeout: int = 3) -> bool:
+def _ping(ip: str, timeout: int = 5) -> bool:
     """Verifica conectividad con ping (síncrono)."""
     try:
         result = subprocess.run(
@@ -38,7 +39,8 @@ def _ping(ip: str, timeout: int = 3) -> bool:
 
 
 def _snmp_get(ip: str, oid: str, community: str = 'public',
-              version: str = '2c', port: int = 161, timeout: int = 3) -> Optional[str]:
+              version: str = '2c', port: int = 161,
+              timeout: int = int(os.environ.get('SNMP_TIMEOUT_S', 5))) -> Optional[str]:
     """
     SNMP GET síncrono usando el comando snmpget del sistema.
     Retorna el valor como string o None si falla.
@@ -292,6 +294,12 @@ def auto_detectar_ups(ip: str, db=None) -> Dict[str, Any]:
         if _probar_modbus(ip):
             resultado['protocolo'] = 'modbus'
             resultado['fases'] = 3
+
+    # El ICMP ping puede fallar dentro del contenedor (sin cap_net_raw) aunque
+    # el equipo SÍ responda por SNMP/Modbus. Si detectamos protocolo, está
+    # alcanzable: que el indicador de la UI no muestre un falso "Ping ❌".
+    if resultado['protocolo'] in ('snmp', 'modbus'):
+        resultado['ping'] = True
 
     # PASO 7: Generar nombre sugerido
     sitio = resultado['sitio_numero']
