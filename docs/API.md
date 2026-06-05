@@ -19,13 +19,16 @@ curl -sS -c $COOKIE -X POST -d 'user=admin&pw=tu_password' -o /dev/null $BASE/lo
 
 | Método | Path | Auth | Descripción |
 |---|---|---|---|
-| GET | `/health` | público | `{"status":"ok"}` |
+| GET | `/health` | público | healthcheck ligero `{"status":"ok"}` |
 | GET | `/api/info` | público | metadatos del servicio |
-| GET | `/health/ui` | sesión | `{auth: bool}` para SPAs |
+| GET | `/health/ui` | público | `{status, auth: bool}` — ligero, para que el front sepa si hay sesión |
+| GET | `/api/health/full` | sesión | healthcheck profundo: `db`, `monitor`, `modbus`, `scheduler`, `zerotier`, `metrics`, `devices` + `status: ok\|degraded` |
 
 ```bash
 curl -sS $BASE/health
 # {"service":"lbs-portal","status":"ok"}
+
+curl -sS -b $COOKIE $BASE/api/health/full | jq '{status, db: .db.ok, monitor: .monitor.alive}'
 ```
 
 ---
@@ -83,19 +86,25 @@ curl -sS -b $COOKIE $BASE/api/inventario/topologia | jq .
 
 ## Monitoreo y dispositivos
 
-| Método | Path | Permiso | Descripción |
+La columna **Acceso** lista los decoradores reales: `permiso` =
+`@permiso_requerido(...)`, `rol` = `@requiere_rol(...)`. Cuando aparecen los
+dos, se exigen **ambos** (permiso `scada` **Y** rol `admin`/`tecnico`).
+
+| Método | Path | Acceso | Descripción |
 |---|---|---|---|
-| GET | `/api/monitoreo/list` | scada | lista de UPS activos |
-| POST | `/api/monitoreo/add` | scada,técnico | crea UPS |
-| DELETE | `/api/monitoreo/delete/<id>` | scada,técnico | borra UPS |
-| POST | `/api/autoset/scan` | scada,técnico | auto-detección de un UPS por IP |
-| GET | `/api/monitoreo/ultimo-estado/<id>` | scada | última lectura conocida |
-| GET | `/api/monitoreo/calidad-energia/<id>?horas=24` | scada | resumen PQI, sags, swells |
-| GET | `/api/monitoreo/perfil-horario/<id>?horas=24` | scada | métricas agrupadas por hora |
-| GET | `/api/telemetry/recent/<id>?minutes=10` | scada | buffer circular (últimos N min) |
-| GET | `/api/ups-history/<id>?horas=6` | scada | historial de gráficas |
-| GET | `/api/datos/historico?device_id=X&horas=Y&campo=Z` | scada | endpoint parametrizable (con fallback InfluxDB legacy) |
-| GET | `/api/ups-proxy/<id>/...` | scada | reverse proxy a la UI web del UPS |
+| GET | `/api/monitoreo/list` | permiso `scada` | lista de UPS activos |
+| POST | `/api/monitoreo/add` | permiso `scada` + rol `admin`/`tecnico` | crea UPS |
+| DELETE | `/api/monitoreo/delete/<id>` | permiso `scada` + rol `admin`/`tecnico` | borra UPS |
+| POST | `/api/autoset/scan` | permiso `scada` + rol `admin`/`tecnico` | auto-detección de un UPS por IP |
+| GET | `/api/monitoreo/ultimo-estado/<id>` | permiso `scada` | última lectura conocida (incluye `temperatura_ambiente` y `ciclos_descarga`) |
+| GET | `/api/monitoreo/calidad-energia/<id>?horas=24` | permiso `scada` | resumen PQI, sags, swells |
+| GET | `/api/monitoreo/perfil-horario/<id>?horas=24` | permiso `scada` | métricas agrupadas por hora |
+| GET | `/api/monitoreo/eventos/<id>?limit=500&nivel=` | permiso `scada` | log de eventos NATIVO del UPS: `{status, eventos[], resumen}` |
+| POST | `/api/monitoreo/eventos/<id>/refresh` | permiso `scada` + rol `admin`/`tecnico` | colecta el log del UPS bajo demanda (requiere `event_source`): `{status, colectados, insertados}` |
+| GET | `/api/telemetry/recent/<id>?minutes=10` | permiso `scada` | buffer circular (últimos N min; incluye `temperatura_ambiente`, `ciclos_descarga`) |
+| GET | `/api/ups-history/<id>?horas=6` | permiso `scada` | historial de gráficas |
+| GET | `/api/datos/historico?device_id=X&horas=Y&campo=Z` | permiso `scada` | endpoint parametrizable; campo `source` = `postgresql` (fuente activa) \| `influxdb` (fallback legacy) \| `none` |
+| GET | `/api/ups-proxy/<id>/...` | permiso `scada` | reverse proxy a la UI web del UPS |
 
 ```bash
 # Agregar un UPS SNMP
@@ -104,6 +113,17 @@ curl -sS -b $COOKIE -X POST -H 'Content-Type: application/json' -d '{
   "snmp_port":161,"snmp_community":"public","snmp_version":1,
   "ups_type":"megatec_snmp","fases":1,"sitio_id":3
 }' $BASE/api/monitoreo/add
+
+# Datos históricos: el campo `source` indica de dónde salieron
+curl -sS -b $COOKIE "$BASE/api/datos/historico?device_id=5&horas=24&campo=voltaje_entrada" | jq .source
+# "postgresql"  ← fuente activa (ups_chart_history). "influxdb" sólo si PG no tiene datos y queda el fallback legacy. "none" si ninguna fuente respondió.
+
+# Log de eventos NATIVO del UPS (cortes, descargas, bypass…)
+curl -sS -b $COOKIE "$BASE/api/monitoreo/eventos/5?limit=100" | jq '.eventos[0]'
+
+# Forzar colecta del log (requiere event_source configurado en el equipo)
+curl -sS -b $COOKIE -X POST $BASE/api/monitoreo/eventos/5/refresh
+# {"status":"ok","colectados":12,"insertados":3}
 ```
 
 ---
@@ -116,7 +136,7 @@ curl -sS -b $COOKIE -X POST -H 'Content-Type: application/json' -d '{
 | POST | `/api/recording/stop/<recording_id>` | scada | detiene + cuenta muestras |
 | GET | `/api/recording/list?device_id=<id>` | scada | lista (todas o por device) |
 | GET | `/api/recording/data/<id>` | scada | datos crudos JSON |
-| GET | `/api/recording/<id>/csv` | scada | descarga CSV |
+| GET | `/api/recording/<id>/csv` | scada | descarga CSV (columnas incluyen `temperatura_ambiente` y `ciclos_descarga`) |
 | DELETE | `/api/recording/<id>` | scada | borra grabación + datos (CASCADE) |
 
 ```bash

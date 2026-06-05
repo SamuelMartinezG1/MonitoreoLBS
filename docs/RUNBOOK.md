@@ -173,12 +173,71 @@ Header → "Admin" → tabla de usuarios              (solo rol = admin)
 
 ### Un UPS aparece offline
 
-1. **Diagnóstico → Ping ICMP** a la IP del UPS. Si falla → problema de
-   red (Teltonika caído, ZeroTier desconectado).
-2. Si ping OK → **Diagnóstico → SNMP test** con la community correcta.
-   Si timeout → SNMP no habilitado en el UPS o community incorrecta.
-3. Para SNMP no estándar → **Auto-detectar SNMP** para ver qué versión
+1. **Diagnóstico → SNMP test** con la community correcta (o prueba el
+   puerto Modbus 502). Si timeout → SNMP no habilitado / community
+   incorrecta, protocolo equivocado, o el sitio inalcanzable por la red.
+   No te fíes del ping ICMP (ver "UPS sin datos / SIN CONEXIÓN" abajo).
+2. Para SNMP no estándar → **Auto-detectar SNMP** para ver qué versión
    + community responde.
+3. Si nada responde → puede ser red del sitio (Teltonika caído, ZeroTier
+   desconectado o enlace SIM degradado): ver "Toda una sucursal cayó".
+
+### Solución de problemas: UPS sin datos / SIN CONEXIÓN
+
+Los UPS se monitorean por **ZeroTier**, en muchos sitios sobre **módem SIM**.
+Eso implica **latencia alta y variable**: lecturas que en LAN tomarían
+milisegundos aquí pueden tardar segundos. Por eso los timeouts son
+configurables en `.env`:
+
+| Variable | Default | Para qué |
+|---|---|---|
+| `SNMP_TIMEOUT_S` | `5` | Espera por respuesta SNMP |
+| `SNMP_RETRIES` | `2` | Reintentos SNMP antes de marcar timeout |
+| `MODBUS_TIMEOUT_S` | `8` | Espera por respuesta Modbus TCP |
+
+Si la señal del sitio es mala (SIM saturada, RSSI bajo), **súbelos** y recrea
+el contenedor:
+
+```bash
+# Edita .env (ej. SNMP_TIMEOUT_S=10, SNMP_RETRIES=3, MODBUS_TIMEOUT_S=15)
+docker compose up -d --build portal     # SIN -f (auto-carga el override)
+```
+
+**Diagnóstico desde el contenedor del portal** (en el server: `lbs-mon-portal`):
+
+```bash
+# Reachability SNMP (community y timeouts explícitos)
+docker exec lbs-mon-portal snmpget -v2c -c public -t5 -r2 <ip> 1.3.6.1.2.1.1.1.0
+
+# Puerto Modbus 502 abierto? (prueba de TCP, no de ICMP)
+docker exec lbs-mon-portal python -c \
+  "import socket;s=socket.socket();s.settimeout(8);s.connect(('<ip>',502));print('502 OPEN')"
+```
+
+> **OJO — el `ping` ICMP desde el contenedor FALLA** aunque el equipo sí
+> responda por SNMP/Modbus. El contenedor no tiene `cap_net_raw`, así que un
+> ping fallido **no** significa que el UPS esté caído. El "Ping" del
+> auto-detect ya **no** depende de ICMP — verifica por SNMP/Modbus.
+
+**Protocolo equivocado.** Un equipo **Modbus** dado de alta como **SNMP**
+(o viceversa) da **timeout permanente** y queda en "SIN CONEXIÓN". Verifica
+el protocolo real:
+- ¿Responde a `snmpget`? → es SNMP.
+- ¿Está abierto el 502? → es Modbus.
+
+Para cambiar el protocolo de un dispositivo **sin perder historial**, actualiza
+`monitoreo_config` en la BD unificada y reinicia el portal:
+
+```bash
+psql -h 127.0.0.1 -p 5440 -U mon_app -d lbs -c \
+  "UPDATE mon.monitoreo_config SET protocolo='modbus', modbus_port=502, modbus_unit_id=1 WHERE ip='<ip>'"
+docker compose up -d --build portal
+```
+
+> El túnel y la red ZeroTier son **cosas distintas**: que `scada.lbsgrid.com`
+> (u otro dominio del túnel Cloudflare) responda **no** implica que los UPS sean
+> alcanzables. El dominio expone el portal; los UPS viven en la red ZeroTier de
+> cada sitio. Un sitio puede estar inalcanzable aunque la UI cargue perfecto.
 
 ### Toda una sucursal cayó
 
@@ -221,8 +280,13 @@ docker compose logs portal | grep <ip_ups>   # filtrar por UPS
 ### Restore
 
 ```bash
+# BD unificada (producción): restaura contra el Postgres unificado
 gunzip -c backups/lbs_20260514_120000.sql.gz | \
-  docker compose exec -T db psql -U guia_app -d guia_instalacion
+  psql -h 127.0.0.1 -p 5440 -U mon_app -d lbs
+
+# (solo modo standalone) si corres el `db` local con --profile standalone:
+# gunzip -c backups/lbs_20260514_120000.sql.gz | \
+#   docker compose exec -T db psql -U guia_app -d guia_instalacion
 ```
 
 ### Recomendación
@@ -245,6 +309,8 @@ Si añades un `migrations/00X_loquesea.sql`:
 ```bash
 # Opción A: rebuild + restart (aplica al arrancar)
 make rebuild
+# (equivale al deploy en el server, SIN -f; auto-carga docker-compose.override.yml):
+#   git pull origin main && docker compose up -d --build portal
 
 # Opción B: aplicar sin reiniciar
 make migrate
@@ -253,8 +319,8 @@ make migrate
 ### Limpiar datos viejos manualmente
 
 ```bash
-docker compose exec db psql -U guia_app -d guia_instalacion -c \
-  "DELETE FROM ups_metrics WHERE ts < NOW() - INTERVAL '30 days'"
+psql -h 127.0.0.1 -p 5440 -U mon_app -d lbs -c \
+  "DELETE FROM mon.ups_metrics WHERE ts < NOW() - INTERVAL '30 days'"
 ```
 
 (El APScheduler ya lo hace cada hora automáticamente, esto es por si
@@ -269,7 +335,8 @@ HISTORY_RETENTION_DAYS=60
 METRICS_RETENTION_DAYS=180
 ```
 
-Reinicia: `make restart`.
+Reinicia: `make restart` (o, en el server, `docker compose up -d --build portal`
+**sin `-f`** — auto-carga `docker-compose.override.yml`).
 
 ---
 
@@ -319,8 +386,8 @@ DB_POOL_MAX=24
 | Situación | Comando |
 |---|---|
 | Portal congelado | `make restart` |
-| Portal OK pero Postgres mal | `docker compose restart db && make restart` |
+| Portal OK pero Postgres mal | Prod (BD unificada): revisa el Postgres unificado en `127.0.0.1:5440` y `make restart`. (solo modo standalone): `docker compose restart db && make restart` |
 | Limpiar todo (¡pierde datos!) | `make nuke && make up` |
-| Reset password admin | `docker compose exec db psql -U guia_app -d guia_instalacion -c "DELETE FROM users WHERE username='admin'"; make restart` → relee `ADMIN_PASSWORD` del `.env` |
+| Reset password admin | `psql -h 127.0.0.1 -p 5440 -U mon_app -d lbs -c "DELETE FROM mon.users WHERE username='admin'"`, luego `docker compose up -d --build portal` → relee `ADMIN_PASSWORD` del `.env` |
 | Volver a una migración | borrar fila en `schema_migrations` + restart |
 | Ver qué UPS está polleando | `make logs \| grep "10.x.x.x"` |

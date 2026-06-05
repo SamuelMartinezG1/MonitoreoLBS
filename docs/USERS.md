@@ -20,19 +20,25 @@ todas las secciones. Los demás roles requieren permisos explícitos.
 
 ### Secciones (permisos)
 
-Definidas en `app/auth.py:DEFAULT_SECTIONS`:
+Definidas en `app/auth.py:DEFAULT_SECTIONS`. **Solo dos secciones son
+permisos ACTIVOS**, es decir, las únicas que aparecen en un decorador
+`@permiso_requerido(...)` y que realmente controlan acceso a endpoints:
 
-| Sección | Endpoints que protege |
-|---|---|
-| `tablero` | (futuro) dashboard ejecutivo |
-| `scada` | `/api/inventario/*`, `/api/monitoreo/*`, `/api/recording/*` |
-| `inventario` | (alias para gestión de la flota) |
-| `monitoreo` | (alias para SCADA) |
-| `diagnostico` | (alias para herramientas) |
-| `herramientas` | `/api/diagnostic/*`, `/api/zerotier/*` |
+| Sección | Estado | Endpoints que protege |
+|---|---|---|
+| `scada` | **activo** | `/api/inventario/*`, `/api/monitoreo/*`, `/api/recording/*` |
+| `herramientas` | **activo** | `/api/diagnostic/*`, `/api/zerotier/*` |
+| `inventario` | histórico/alias | ninguno (no protege endpoints) |
+| `monitoreo` | histórico/alias | ninguno (no protege endpoints) |
+| `diagnostico` | histórico/alias | ninguno (no protege endpoints) |
+| `tablero` | histórico/alias | ninguno (no protege endpoints) |
 
-> Los aliases son por compatibilidad histórica; en la práctica los
-> decoradores activos son `scada` y `herramientas`.
+> Las secciones `inventario`, `monitoreo`, `diagnostico` y `tablero` son
+> aliases por compatibilidad histórica: se **almacenan** en BD (tabla
+> `user_permissions`) y se muestran en la UI, pero **no** están asociadas a
+> ningún decorador, así que no restringen ningún endpoint. Para conceder o
+> negar acceso real solo importan `scada` y `herramientas`. (Verificable con
+> `grep -rn permiso_requerido app/routes/`.)
 
 ---
 
@@ -109,8 +115,10 @@ El usuario podrá entrar inmediatamente con la nueva contraseña.
 | POST | `/api/users/<id>/password` | `{new_password}` |
 | DELETE | `/api/users/<id>` | — |
 
-Ejemplo completo: crear un técnico de campo con acceso solo a las
-herramientas de diagnóstico + SCADA (sin alterar inventario):
+Ejemplo completo: crear un técnico de campo con acceso a SCADA + las
+herramientas de diagnóstico. El acceso real lo dan `scada` y
+`herramientas`; los demás valores (`monitoreo`, `tablero`) se guardan pero
+no controlan endpoints:
 
 ```bash
 curl -sS -b $COOKIE -X POST -H 'Content-Type: application/json' -d '{
@@ -122,7 +130,8 @@ curl -sS -b $COOKIE -X POST -H 'Content-Type: application/json' -d '{
 # {"id":2,"status":"ok"}
 ```
 
-Luego, si la persona deja de tener acceso a herramientas:
+Luego, si la persona deja de tener acceso a las herramientas, basta con
+quitar `herramientas` del set:
 
 ```bash
 curl -sS -b $COOKIE -X PUT -H 'Content-Type: application/json' -d '{
@@ -167,16 +176,19 @@ acción queda en logs del portal).
 | Rol | Permisos típicos |
 |---|---|
 | 1 `admin` | todos (suele ser CTO o líder de infra) |
-| 2-3 `tecnico` | `scada`, `monitoreo`, `herramientas` |
-| N `operador` | solo `scada`, `monitoreo` |
+| 2-3 `tecnico` | `scada`, `herramientas` (+ `monitoreo` como etiqueta) |
+| N `operador` | solo `scada` |
 
-Los técnicos pueden ejecutar diagnósticos y agregar UPS al inventario.
-Los operadores solo ven el SCADA + alarmas.
+Los técnicos pueden ejecutar diagnósticos (`herramientas`) y agregar UPS al
+inventario (`scada`). Los operadores solo ven el SCADA + alarmas (`scada`).
+Recuerda que el control de acceso efectivo lo dan `scada` y `herramientas`.
 
 ### Equipo multi-cliente
 
-Considera dejar `tablero` solo para los que necesitan métricas
-agregadas y bloquear `inventario` a los que no deben modificar la flota.
+El acceso a la flota y al inventario va por `scada`; el diagnóstico y
+ZeroTier van por `herramientas`. Las secciones `tablero` e `inventario`
+hoy son solo etiquetas (no bloquean nada): quítale `scada` a quien no deba
+modificar la flota.
 
 ---
 
