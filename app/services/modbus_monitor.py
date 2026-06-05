@@ -376,7 +376,7 @@ class ModbusMonitor:
         ups_type = dev.get('ups_type', 'invt_enterprise')
         sitio = dev.get('sitio_nombre', '')
 
-        client = ModbusTcpClient(ip, port=port, timeout=5)
+        client = ModbusTcpClient(ip, port=port, timeout=int(os.environ.get('MODBUS_TIMEOUT_S', 8)))
         try:
             try:
                 connected = client.connect()

@@ -337,7 +337,11 @@ class MonitoringService(threading.Thread):
 
             engine = SnmpEngine()
             auth = CommunityData(community, mpModel=snmp_version)
-            transport = await UdpTransportTarget.create((ip, port), timeout=3.0, retries=1)
+            transport = await UdpTransportTarget.create(
+                (ip, port),
+                timeout=float(os.environ.get('SNMP_TIMEOUT_S', 5)),
+                retries=int(os.environ.get('SNMP_RETRIES', 2)),
+            )
             context = ContextData()
 
             data: dict = {}

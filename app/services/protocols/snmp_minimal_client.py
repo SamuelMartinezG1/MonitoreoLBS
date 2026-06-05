@@ -4,10 +4,16 @@ Cliente SNMP Minimalista - Solo 5 OIDs que funcionan
 Para UPS con soporte SNMP limitado
 """
 
+import os
 import logging
 from pysnmp.hlapi.v3arch.asyncio import *
 
 logger = logging.getLogger(__name__)
+
+# Timeouts tolerantes a enlaces lentos/intermitentes (p.ej. UPS por SIM/ZeroTier).
+# Configurables por entorno; suben a 5 s / 2 reintentos por defecto.
+SNMP_TIMEOUT_S = float(os.environ.get('SNMP_TIMEOUT_S', 5))
+SNMP_RETRIES   = int(os.environ.get('SNMP_RETRIES', 2))
 
 class MinimalSNMPClient:
     """
@@ -48,7 +54,7 @@ class MinimalSNMPClient:
             objetos = [ObjectType(ObjectIdentity(oid)) for oid in self.MINIMAL_OIDS.values()]
             
             # Crear transporte
-            transport = await UdpTransportTarget.create((target_ip, self.port), timeout=2.0, retries=1)
+            transport = await UdpTransportTarget.create((target_ip, self.port), timeout=SNMP_TIMEOUT_S, retries=SNMP_RETRIES)
             
             # Consultar (SNMPv1 a veces falla con multiples OIDs, pero probemos)
             # Si falla, podemos intentar uno a uno, pero probemos GET normal primero
