@@ -8,6 +8,35 @@ Guía completa para desplegar el portal en Ubuntu Server.
 
 ---
 
+## 0. Dos modos de BD: unificada (producción) vs standalone (dev/test)
+
+El portal puede correr de dos formas:
+
+- **Unificada (producción).** El portal apunta a la BD compartida
+  `lbs_db_unificada` (PostgreSQL), base `lbs`, esquema `mon`, usuario de app
+  `mon_app`, puerto host **5440** (superusuario `lbs_admin`). Esa BD la
+  administra un proyecto separado **`lbs-db`** (scripts `db/*.sql`: el esquema
+  `mon` se crea en `db/40_mon.sql`, los grants en `db/99_grants.sql`, y las
+  migraciones de esta app se pre-marcan en `db/35_app_migrations_state.sql`).
+  En este modo **no** se levanta ningún Postgres local de MonitoreoLBS.
+  Guía canónica del servidor: **`lbs-db/integracion/DESPLIEGUE-SERVIDOR.md`**.
+
+- **Standalone (dev/test).** Levanta un Postgres local propio del compose
+  (servicio `db`, base `guia_instalacion`, usuario `guia_app`). Este servicio
+  está detrás del perfil `standalone`, así que **NO arranca por defecto**;
+  solo con `docker compose --profile standalone up -d`.
+
+Acceso directo a la BD unificada (admin):
+
+```bash
+psql -h 127.0.0.1 -p 5440 -U mon_app -d lbs        # o -U lbs_admin para superusuario
+```
+
+> El resto de esta guía describe el deploy en servidor (unificada). Donde algo
+> sea específico de standalone, se indica explícitamente.
+
+---
+
 ## Pre-requisitos en el host
 
 | Paquete | Para |
@@ -51,20 +80,23 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 $EDITOR .env
 ```
 
-Mínimo de producción:
+Mínimo de producción (BD **unificada**, ver §0 y §7):
 
 ```dotenv
 PROJECT_NAME=monlbs                  # prefijo de contenedores y volúmenes
 SECRET_KEY=<48-bytes-random>
 APP_PORT=5005
-DB_USER=guia_app
-DB_PASSWORD=<contraseña-fuerte>
-DB_NAME=guia_instalacion
-DB_EXTERNAL_PORT=5435
+# La BD unificada se inyecta vía el override LOCAL del servidor (no por DB_*).
+# Apunta al Postgres unificado por el puerto publicado del host:
+UNIFIED_DATABASE_URL=postgresql://mon_app:<MON_DB_PASSWORD>@127.0.0.1:5440/lbs
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=<password-inicial-fuerte>  # cambiala tras el primer login
 CLOUDFLARE_TUNNEL_TOKEN=<opcional>
 ```
+
+> Los valores `DB_USER=guia_app` / `DB_NAME=guia_instalacion` / `DB_EXTERNAL_PORT`
+> de `.env.example` aplican **solo a modo standalone** (dev/test con Postgres
+> local). En producción no se usan: el portal habla con la BD unificada.
 
 > **Nunca commitees `.env`.** Está en `.gitignore` por defecto.
 
@@ -94,17 +126,44 @@ Ver [`ZEROTIER.md`](ZEROTIER.md) para detalle.
 
 ## 4. Levantar el stack
 
+### Deploy en servidor (producción, BD unificada)
+
+En el servidor, con la BD unificada ya levantada por el proyecto `lbs-db`:
+
 ```bash
-make build              # construye lbs/portal:latest (2-3 min)
-make up                 # arranca db + portal
-make logs               # tail
+cd ~/lbs/MonitoreoLBS
+git pull origin main
+docker compose up -d --build portal        # SIN -f
+```
+
+> **No pases `-f docker-compose.yml -f ...monitoreo.override.yml`.** El compose
+> auto-carga un `docker-compose.override.yml` **LOCAL del servidor** (no
+> commiteado) que fija `APP_PORT=5005`, el `DATABASE_URL` unificado, el
+> `SECRET_KEY`, desactiva el `db` local y apunta el healthcheck a `/health/ui`.
+> Si pasas `-f`, ese override local se ignora y el portal cae al puerto 5000
+> (que choca con otra app). El archivo `lbs-db/integracion/monitoreo.override.yml`
+> es solo una **plantilla** de referencia, no se usa con `-f` en el servidor.
+>
+> Guía canónica del servidor: **`lbs-db/integracion/DESPLIEGUE-SERVIDOR.md`**.
+
+`make up` / `docker compose up` **no** arrancan ningún Postgres local: el
+servicio `db` está detrás del perfil `standalone` (ver abajo).
+
+### Modo standalone (dev/test, BD local)
+
+Para un stack autocontenido con Postgres local del compose:
+
+```bash
+make build                              # construye lbs/portal:latest (2-3 min)
+docker compose --profile standalone up -d   # levanta db local + portal
+make logs                               # tail
 ```
 
 ### Verificación post-arranque
 
 ```bash
 make health             # {"status":"ok"}
-make ps                 # ambos contenedores en "healthy"
+make ps                 # contenedor(es) en "healthy"
 ```
 
 Los logs del primer arranque deberían mostrar:
@@ -159,16 +218,17 @@ polling pero queda lento.
 El portal corre con `network_mode: host` para alcanzar UPS por SNMP/Modbus
 en la LAN o vía ZeroTier. Implicaciones:
 
-- El puerto `APP_PORT` queda expuesto en **todas** las interfaces del host.
-- El healthcheck consulta `http://127.0.0.1:5005/health`.
-- Postgres se accede como `127.0.0.1:DB_EXTERNAL_PORT` desde el portal.
+- El puerto `APP_PORT` (5005) queda expuesto en **todas** las interfaces del host.
+- El healthcheck (override del servidor) consulta `http://127.0.0.1:5005/health/ui`.
+- En producción el portal accede a la BD unificada como `127.0.0.1:5440/lbs`
+  (puerto publicado por `lbs-db`). En standalone usa `127.0.0.1:DB_EXTERNAL_PORT`.
 
 Para producción se recomienda:
 
 ```bash
-# Bloquear acceso directo al puerto desde fuera del host
+# Bloquear acceso directo a los puertos desde fuera del host
 sudo ufw deny 5005/tcp
-sudo ufw deny 5435/tcp
+sudo ufw deny 5440/tcp
 sudo ufw allow ssh
 sudo ufw enable
 ```
@@ -186,6 +246,10 @@ Las migraciones SQL viven en `migrations/`. **Se aplican automática-
 mente en cada arranque** vía `migrations/runner.py`, que usa la tabla
 `schema_migrations` para tracking. Es seguro re-arrancar — solo
 aplican las pendientes.
+
+> En la BD **unificada**, el esquema `mon` ya lo crea el proyecto `lbs-db`
+> (`db/40_mon.sql`) y estas migraciones se pre-marcan como aplicadas en
+> `db/35_app_migrations_state.sql`, para que el runner no las re-ejecute.
 
 | Archivo | Tablas que toca |
 |---|---|
@@ -208,14 +272,17 @@ $EDITOR migrations/009_xxx.sql
 make migrate
 ```
 
-### Apuntar a una BD externa
+### Apuntar a la BD unificada (producción)
 
-Si ya tienes Postgres en otra parte, comenta el servicio `db` en
-`docker-compose.yml` y rellena `DATABASE_URL`:
+En producción el portal no usa el `db` local: el `DATABASE_URL` se inyecta vía
+el override LOCAL del servidor (ver §4) tomando `UNIFIED_DATABASE_URL` del
+`.env`. Apunta al Postgres unificado por el puerto publicado del host:
 
 ```dotenv
-DATABASE_URL=postgresql://guia_app:xxx@db.lbs.lan:5432/guia_instalacion
+UNIFIED_DATABASE_URL=postgresql://mon_app:<MON_DB_PASSWORD>@127.0.0.1:5440/lbs
 ```
+
+(El esquema `mon` y los grants los crea el proyecto `lbs-db`; ver §0.)
 
 ---
 
@@ -244,11 +311,24 @@ y `docker compose pull portal && make up`.
 
 ## 9. Backups
 
-### Backup manual
+> En **producción** la BD unificada la respalda el proyecto `lbs-db`
+> (`cd lbs-db && make backup`, normalmente vía cron diario). Los comandos de
+> abajo son para respaldar **solo el esquema `mon`** desde el host, o para el
+> modo standalone.
+
+### Backup manual (esquema `mon` de la BD unificada)
 
 ```bash
 mkdir -p backups
-docker compose exec -T db pg_dump -U $DB_USER -d $DB_NAME --clean --create \
+pg_dump -h 127.0.0.1 -p 5440 -U mon_app -d lbs --schema=mon \
+  | gzip > backups/mon-$(date +%F-%H%M).sql.gz
+```
+
+Para standalone, apunta al `db` local (usa `$DB_USER` / `$DB_NAME`):
+
+```bash
+docker compose --profile standalone exec -T db \
+  pg_dump -U $DB_USER -d $DB_NAME --clean --create \
   | gzip > backups/lbs-$(date +%F-%H%M).sql.gz
 ```
 
@@ -260,14 +340,15 @@ docker compose exec -T db pg_dump -U $DB_USER -d $DB_NAME --clean --create \
 0 4 * * 0  ubuntu  find /opt/MonitoreoLBS/backups -name '*.sql.gz' -mtime +30 -delete
 ```
 
-### Restore
+### Restore (esquema `mon` de la BD unificada)
 
 ```bash
-gunzip -c backups/lbs-2026-05-14-0300.sql.gz \
-  | docker compose exec -T db psql -U $DB_USER -d postgres
+gunzip -c backups/mon-2026-05-14-0300.sql.gz \
+  | psql -h 127.0.0.1 -p 5440 -U mon_app -d lbs
 ```
 
-> El restore es destructivo (usa `--clean --create`).
+> Restaurar sobre una BD con datos puede ser destructivo. Verifica el contenido
+> del dump y respalda antes de aplicar.
 
 ---
 
@@ -292,11 +373,13 @@ make shell       # bash dentro del contenedor
 | Síntoma | Diagnóstico |
 |---|---|
 | Portal no arranca | `make logs` → busca `SECRET_KEY required` o `migración X falló` |
-| `health` devuelve 502 | `docker compose ps` → ¿`portal` healthy? `db` healthy? |
+| `health` devuelve 502 | `docker compose ps` → ¿`portal` healthy? ¿BD unificada `lbs_db_unificada` arriba? |
+| Portal cae al puerto 5000 | desplegaste con `-f`: el override local se ignoró. Re-deploy `docker compose up -d --build portal` SIN `-f` (ver §4) |
+| Portal no conecta a la BD | ¿`lbs-db` levantado? prueba `psql -h 127.0.0.1 -p 5440 -U mon_app -d lbs -c 'select 1'` |
 | No se ven UPS en sidebar | login OK pero sin permisos `scada`? probar `GET /api/inventario/topologia` |
 | SNMP no llega a UPS | `make shell` → `snmpwalk -v2c -c public 10.x.x.x` |
 | ZeroTier no disponible | `GET /api/zerotier/health` → si `available:false`, re-ejecutar `setup_zerotier.sh` |
-| Conflicto de puertos | cambia `APP_PORT` y `DB_EXTERNAL_PORT` en `.env`, `make restart` |
+| Conflicto de puertos | producción: ajusta `APP_PORT` en el override local. Standalone: `APP_PORT`/`DB_EXTERNAL_PORT` en `.env`, `make restart` |
 | Socket.IO timeouts | bajo CF tunnel: activa "WebSocket" en la configuración del túnel |
 | BD llena | revisa `HISTORY_RETENTION_DAYS` y `METRICS_RETENTION_DAYS` |
 
@@ -310,9 +393,10 @@ make shell       # bash dentro del contenedor
 - [ ] Cron de backup configurado con retención
 - [ ] Cloudflare Tunnel activo con `Public Hostname` mapeado
 - [ ] WebSocket habilitado en CF (para SCADA)
-- [ ] `make ps` muestra ambos contenedores `(healthy)`
+- [ ] Producción: BD unificada (`lbs-db`) levantada y portal desplegado **sin `-f`**
+- [ ] `docker compose ps` muestra `portal` `(healthy)` en el puerto 5005
 - [ ] `make logs` sin errores recurrentes (≥ 5 min sin tráfico)
-- [ ] Firewall bloquea `5005/tcp` y `5435/tcp` desde fuera del host
+- [ ] Firewall bloquea `5005/tcp` y `5440/tcp` desde fuera del host
 - [ ] DNS interno o público apunta al host correcto
 - [ ] Usuarios técnicos / operadores creados con permisos correctos
 - [ ] Al menos un sitio + un UPS de prueba registrados

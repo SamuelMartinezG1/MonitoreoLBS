@@ -88,15 +88,19 @@ Decisiones clave:
 │     modbus_monitor.py       ← orquesta Modbus                        │
 │     pg_metrics.py           ← layer EAV de Postgres (batch insert)   │
 │     zerotier_client.py      ← API HTTP del daemon ZT                 │
+│     event_log_collector.py  ← log de eventos NATIVO del UPS          │
 │     auto_detect.py          ← detecta protocolo/tipo de UPS          │
 │     protocols/              ← clientes SNMP por tipo (Minimal,        │
 │                                UPSMIB, Enterprise, Scanner)          │
 ├──────────────────────────────────────────────────────────────────────┤
 │  Persistencia                                                         │
 │     base_datos.py (GestorDB singleton, pool psycopg lazy)            │
+│       → BD unificada `lbs_db_unificada`: base `lbs`, esquema `mon`,  │
+│         usuario `mon_app`, 127.0.0.1:5440                            │
+│         (search_path = mon,core,auth,public)                         │
 │     auth.py       (Flask-Login + bcrypt + CRUD de usuarios)          │
 ├──────────────────────────────────────────────────────────────────────┤
-│  Schema (PostgreSQL)                                                  │
+│  Schema (PostgreSQL, esquema `mon`)                                   │
 │     users, user_permissions     ← cuentas + permisos por sección      │
 │     sitios, monitoreo_config    ← inventario lógico                   │
 │     ups_oid_profiles            ← perfiles OID por UPS                │
@@ -105,9 +109,18 @@ Decisiones clave:
 │     ups_metrics                 ← series de tiempo EAV 90 días        │
 │     ups_recordings              ← grabaciones manuales                │
 │     ups_recording_data          ← muestras de grabaciones             │
+│     ups_event_log               ← log de eventos NATIVO del UPS       │
 │     schema_migrations           ← tracking de migraciones             │
 └──────────────────────────────────────────────────────────────────────┘
 ```
+
+`ups_telemetry_log`, `ups_chart_history` y `ups_recording_data` incluyen
+además las columnas **`temperatura_ambiente`** (temp ambiente del gabinete,
+distinta de `temperatura` que es la de batería) y **`ciclos_descarga`**
+(contador acumulado de descargas del fabricante); son `N/D` si el equipo no
+las expone. La fuente activa de **series de tiempo** es Postgres `ups_metrics`
+(EAV); **InfluxDB ya NO se escribe** y solo queda como fallback legacy de
+lectura en `/api/datos/historico` (ver sección 8).
 
 ### Migraciones
 
@@ -126,6 +139,9 @@ aplicadas; las nuevas pueden añadirse sin tocar `pgdata`.
 | `006_ups_metrics.sql` | `ups_metrics` (EAV) |
 | `007_users.sql` | `users`, `user_permissions` |
 | `008_schema_fixes.sql` | columnas extra de `sitios` + `notas_tecnicas` |
+| `009_ambient_temp_discharge_cycles.sql` | columnas `temperatura_ambiente` + `ciclos_descarga` en telemetría/chart/grabaciones |
+| `009_recordings_integrity.sql` | constraints de integridad de grabaciones |
+| `010_ups_event_log.sql` | `ups_event_log` + columnas `event_source`/`web_*` en `monitoreo_config` |
 
 ---
 
@@ -145,6 +161,7 @@ Bootstrap-icons (CDN).
 │     diagnostico.html→  DiagnosticoApp (+ ZeroTierPanel)          │
 │     monitoreo.html  →  App (SCADA)                               │
 │     grabaciones.html→  GrabacionesApp                            │
+│     eventos.html    →  EventosApp (log de eventos nativo del UPS)│
 │     admin.html      →  AdminApp                                  │
 │     login.html      →  formulario clásico                        │
 ├──────────────────────────────────────────────────────────────────┤
@@ -172,6 +189,11 @@ Bootstrap-icons (CDN).
 ```
 
 ### DataLayer (window.MOCK + LBS_API)
+
+> **`window.MOCK` ya NO son fixtures sintéticos: contiene datos REALES.**
+> El nombre es histórico. `MockData.jsx` hidrata `window.MOCK` con lo que
+> devuelven los endpoints reales (vía `window.LBS_API`). Sin datos del equipo,
+> los campos quedan en `'—'` / `'N/D'`, nunca con valores inventados.
 
 El componente `MockData.jsx` es el **core del front**:
 
@@ -282,7 +304,30 @@ que 150 INSERTs separados.
 - `db.limpiar_historial_antiguo(HISTORY_RETENTION_DAYS)` → 30 d default
 - `pg_metrics.cleanup_old()` → 90 d default sobre `ups_metrics`
 
+El mismo scheduler corre un segundo job (`lbs_event_log`, cada
+`EVENT_LOG_INTERVAL_MIN` = 15 min default) que invoca
+`event_log_collector.collect_all(db)` (ver sección 5b).
+
 El loop principal **no** hace cleanup: pollea limpio sin pausas largas.
+
+---
+
+### 5b. Log de eventos NATIVO del UPS
+
+Independiente de las alarmas que el portal calcula por umbral, esta feature
+trae el **historial de eventos que el propio UPS registra** (cortes de red,
+descargas, bypass, EOD, etc.):
+
+- **Tabla** `ups_event_log` (dedupe por `device_id + ts + evento`).
+- **Origen por equipo**: columna `event_source` de `monitoreo_config`
+  (`php_almhistory` = tarjeta web PHP, `netagent_xml` = NetAgent/Megatec,
+  `NULL`/`''` = sin colector), con credenciales `web_user`/`web_pass`/`web_port`.
+- **Colector** `app/services/event_log_collector.py`: `collect_all(db)` lo corre
+  el scheduler; `collect_device(dev)` lo dispara el endpoint de refresh.
+- **Endpoints**: `GET /api/monitoreo/eventos/<id>` (lista + resumen) y
+  `POST /api/monitoreo/eventos/<id>/refresh` (colecta bajo demanda).
+- **UI**: página `/eventos` (`EventosApp`) y panel embebido `UpsEventsPanel`
+  dentro del SCADA de Monitoreo.
 
 ---
 
@@ -343,7 +388,7 @@ implementa los métodos:
 | Idea | Razón del descarte |
 |---|---|
 | Bundler frontend (Vite/esbuild) | El proyecto cabe en JSX vía Babel y simplifica el deploy. Internet en el server hace viable el CDN. |
-| InfluxDB para series de tiempo | Se reemplazó por Postgres EAV (`ups_metrics`) para tener una sola BD. 90 d × 150 UPS ≈ 600 M filas — Postgres aguanta con índices. |
+| InfluxDB para series de tiempo | Se reemplazó por Postgres EAV (`ups_metrics`) para tener una sola BD. 90 d × 150 UPS ≈ 600 M filas — Postgres aguanta con índices. **Ya NO se escribe a InfluxDB**; solo queda como fallback legacy de lectura en `/api/datos/historico` (`source: "influxdb"`). |
 | `zerotier-cli` exec en cada request | API HTTP local es más rápida, idempotente y no requiere usuario en el grupo `zerotier-one`. |
 | WebSocket binario propio | Socket.IO ya está y maneja reconexión + fallback transparente. |
 | Background workers (Celery) | El polling es CPU-light, asyncio.gather alcanza. APScheduler para cleanups. |

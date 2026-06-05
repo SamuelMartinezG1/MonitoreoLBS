@@ -7,7 +7,7 @@ Compose. Diseñado para escalar a **150+ UPS** con polling concurrente,
 batch inserts y cleanup programado.
 
 ```
-   Operador / Técnico  ──▶  Cloudflare Tunnel  ──▶  Portal :5005  ──▶  PostgreSQL :5432
+   Operador / Técnico  ──▶  Cloudflare Tunnel  ──▶  Portal :5005  ──▶  PostgreSQL :5440 (lbs/mon)
                                                           │
                                                           ▼
                                                   ZeroTier overlay
@@ -28,14 +28,15 @@ batch inserts y cleanup programado.
 |---|---|
 | **Polling SNMP** | INVT (.56788), Megatec / Voltronic (.935), UPS-MIB RFC 1628, perfiles OID custom. asyncio.gather, cliente SNMP cacheado por dispositivo (TTL configurable). |
 | **Polling Modbus TCP** | INVT industrial. ThreadPoolExecutor concurrente (32 workers default → ~15 s/ciclo para 150 UPS). |
-| **Live SCADA** | Socket.IO `/monitor` con eventos `ups_update` cada 2 s. Diagrama unifilar interactivo (UpsDiagram), charts históricos de 6 h. |
+| **Live SCADA** | Socket.IO `/monitor` con eventos `ups_update` cada 2 s. **Datos reales, sin simulación** (sin lecturas muestra `—`/`N/D`). Diagrama unifilar interactivo (UpsDiagram), charts históricos de 6 h, temperatura ambiente y total de descargas (N/D si el equipo no las expone). |
+| **Eventos del UPS** | Log de eventos **nativo del UPS** en la página `/eventos` y embebido en Monitoreo. |
 | **Inventario** | CRUD de sitios y UPS. Auto-detección de protocolo + tipo de UPS. |
 | **Diagnóstico** | 14 herramientas: ping, port, traceroute, interfaces, SNMP get/walk/autodetect, Modbus test, scan rango, SNMP mass scan, ZeroTier status, ping a routers, network health. |
 | **ZeroTier** | Estado del nodo, gestión de networks (join/leave), peers, escaneo de subred, detección de Teltonika, escaneo de LAN del sitio, **wizard de bootstrap** completo. |
 | **Banco SNMP / Editor OID** | Por UPS: SNMP walk + tabla de mapeo de OIDs a variables estándar + factor + unidad + prueba en vivo. |
 | **Grabaciones** | Inicio/stop por UPS, lista global, visualización inline (chart SVG), export CSV. |
 | **Administración** | Gestión de usuarios + permisos por sección (admin only). Cambio de contraseña propio. |
-| **Persistencia** | PostgreSQL 15 (`ups_metrics` EAV, `ups_chart_history`, `ups_telemetry_log`, `ups_recordings/recording_data`, `monitoreo_config`, `sitios`, `users`, `user_permissions`, `ups_oid_profiles`). |
+| **Persistencia** | PostgreSQL. En producción usa la **BD unificada** `lbs` (esquema `mon`); las series viven en `ups_metrics` (EAV) — InfluxDB ya no se usa. Tablas: `ups_metrics`, `ups_chart_history`, `ups_telemetry_log`, `ups_recordings/recording_data`, `monitoreo_config`, `sitios` (con `temperatura_ambiente` / `ciclos_descarga`), `users`, `user_permissions`, `ups_oid_profiles`. |
 | **Operación** | Migraciones idempotentes al arranque, APScheduler para cleanup, Toast notifications globales, empty states. |
 
 ---
@@ -64,10 +65,10 @@ MonitoreoLBS/
 │   │   ├── auto_detect.py        # auto-discovery de UPS
 │   │   └── protocols/            # SNMPClient, MinimalSNMPClient, UPSMIBClient, SNMPScanner
 │   ├── utils/ups_oids.py
-│   ├── templates/lbs/            # Jinja: login, dashboard, monitoreo, inventario,
-│   │                             #        diagnostico, grabaciones, admin
+│   ├── templates/lbs/            # Jinja: login, dashboard, monitoreo, eventos,
+│   │                             #        inventario, diagnostico, grabaciones, admin
 │   └── static/lbs/
-│       ├── components/           # JSX: Shell, Sidebar, MockData (DataLayer),
+│       ├── components/           # JSX: Shell, Sidebar, DataLayer (datos reales),
 │       │                         #      Toast, Modals, OIDEditor, ZTWizard,
 │       │                         #      DashboardApp, InventarioApp,
 │       │                         #      DiagnosticoApp, ZeroTierPanel,
@@ -76,7 +77,8 @@ MonitoreoLBS/
 │       │                         #      tweaks-panel
 │       └── styles/               # tokens, shell, panels, layout, pages, modals,
 │                                 # diagnostico, admin
-├── migrations/                   # 001 → 008 + runner.py (transacciones)
+├── migrations/                   # migraciones SQL + runner.py (transacciones).
+│                                  # En la BD unificada las crea/pre-marca `lbs-db`.
 ├── scripts/
 │   ├── backup_db.sh
 │   └── setup_zerotier.sh         # prepara authtoken para el contenedor
@@ -100,6 +102,28 @@ MonitoreoLBS/
 
 ## Quickstart
 
+El portal corre en dos modos: **unificado** (producción, sobre la BD compartida
+`lbs` que administra el proyecto `lbs-db`) y **standalone** (dev/test, con un
+Postgres local del compose). Ver [`docs/DEPLOY.md`](docs/DEPLOY.md) §0.
+
+### Producción (BD unificada)
+
+Con la BD unificada ya levantada por `lbs-db`, en el servidor:
+
+```bash
+cd ~/lbs/MonitoreoLBS
+git pull origin main
+docker compose up -d --build portal   # SIN -f (auto-carga el override LOCAL)
+```
+
+> **No pases `-f docker-compose.yml -f ...monitoreo.override.yml`.** El compose
+> auto-carga un `docker-compose.override.yml` **local del servidor** (no
+> commiteado) que fija `APP_PORT=5005`, el `DATABASE_URL` unificado y el
+> `SECRET_KEY`. Pasar `-f` lo ignora y el portal cae al puerto 5000 (que choca
+> con otra app). Guía canónica: `lbs-db/integracion/DESPLIEGUE-SERVIDOR.md`.
+
+### Standalone (dev/test)
+
 ```bash
 git clone <repo>.git MonitoreoLBS
 cd MonitoreoLBS
@@ -110,9 +134,9 @@ $EDITOR .env                          # SECRET_KEY, DB_PASSWORD, ADMIN_PASSWORD
 curl -s https://install.zerotier.com | sudo bash
 sudo ./scripts/setup_zerotier.sh      # copia authtoken a /etc/lbs/zerotier-token
 
-# 2. Stack
-docker compose up -d                  # db + portal
-docker compose --profile tunnel up -d # + Cloudflare Tunnel (opcional)
+# 2. Stack con Postgres local (perfil standalone)
+docker compose --profile standalone up -d        # db local + portal
+docker compose --profile tunnel up -d            # + Cloudflare Tunnel (opcional)
 
 # 3. Verificar
 make health                           # {"status":"ok"}
@@ -121,9 +145,11 @@ make logs                             # tail -f del portal
 
 Portal: `http://<host>:5005`  (login con `ADMIN_USERNAME` / `ADMIN_PASSWORD`).
 
-> El primer arranque aplica 8 migraciones SQL y crea el usuario admin
-> inicial. El log marcará la línea `Usuario admin inicial creado.
-> CÁMBIALE LA CONTRASEÑA.` — hazlo desde el menú de usuario en el header.
+> `docker compose up` sin `--profile standalone` **no** levanta el `db` local
+> (está detrás del perfil `standalone`). El primer arranque aplica las
+> migraciones SQL y crea el usuario admin inicial. El log marcará la línea
+> `Usuario admin inicial creado. CÁMBIALE LA CONTRASEÑA.` — hazlo desde el menú
+> de usuario en el header.
 
 ---
 
@@ -145,8 +171,12 @@ Portal: `http://<host>:5005`  (login con `ADMIN_USERNAME` / `ADMIN_PASSWORD`).
 | Variable | Default | Para |
 |----------|---------|------|
 | `SECRET_KEY` | — | clave Flask **obligatoria** |
-| `APP_PORT` | `5005` | puerto HTTP del portal |
+| `APP_PORT` | `5005` | puerto HTTP del portal (lo fija el override local en server) |
+| `UNIFIED_DATABASE_URL` | — | conexión a la BD unificada (`mon_app@127.0.0.1:5440/lbs`); el override la inyecta como `DATABASE_URL` |
+| `DB_USER` / `DB_NAME` / `DB_EXTERNAL_PORT` | `guia_app` / `guia_instalacion` / `5432` | **solo modo standalone** (Postgres local) |
 | `POLL_INTERVAL` | `2` | segundos entre ciclos SNMP |
+| `SNMP_TIMEOUT_S` / `SNMP_RETRIES` | `5` / `2` | timeouts SNMP (enlaces lentos: SIM/ZeroTier) |
+| `MODBUS_TIMEOUT_S` | `8` | timeout de lectura Modbus TCP |
 | `MODBUS_POLL_WORKERS` | `32` | hilos del pool Modbus |
 | `METRICS_SAMPLE_INTERVAL_S` | `30` | cada cuánto se persiste a `ups_metrics` |
 | `HISTORY_SAMPLE_INTERVAL_S` | `30` | cada cuánto se persiste a `ups_chart_history` |
@@ -180,7 +210,7 @@ Postgres recomendado para 150 UPS: `max_connections >= 40`,
 ## Comandos Makefile
 
 ```
-make up              # docker compose up -d (db + portal)
+make up              # docker compose up -d (solo portal; el db local NO arranca)
 make up-tunnel       # ... + Cloudflare Tunnel
 make logs            # tail logs del portal
 make logs-db         # tail logs Postgres

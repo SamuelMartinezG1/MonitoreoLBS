@@ -4,6 +4,12 @@ MonitoreoLBS gestiona ZeroTier (red overlay que conecta el portal con las
 oficinas remotas a través de los routers Teltonika) desde la pantalla de
 **Diagnóstico → ZeroTier**. Esta guía explica el setup en Ubuntu Server.
 
+> **Despliegue de servicio:** los UPS se alcanzan por la red ZeroTier de
+> servicio (ej. `ztsjse2mqn`), con rutas administradas hacia las subredes
+> `192.168.x` de cada sitio. Como el enlace suele ser por módem SIM (latencia
+> alta), los timeouts de SNMP/Modbus son configurables vía entorno:
+> `SNMP_TIMEOUT_S`, `SNMP_RETRIES` y `MODBUS_TIMEOUT_S`.
+
 ---
 
 ## 1. Instalar ZeroTier en el host

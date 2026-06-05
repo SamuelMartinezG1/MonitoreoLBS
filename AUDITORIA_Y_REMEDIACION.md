@@ -1,5 +1,11 @@
 # Auditoría y Remediación — MonitoreoLBS
 
+> **ESTADO:** Documento histórico — auditoría del 2026-05-18, **CERRADA**. La
+> mayoría de los hallazgos ya están implementados y desplegados. Deuda técnica
+> pendiente conocida: **Q3** (modularizar `base_datos.py`) y **Q4** (dividir los
+> componentes JSX grandes). Para una nueva auditoría, crear un documento nuevo
+> (no reabrir este).
+
 Fecha: 2026-05-18
 Alcance: Seguridad, Rendimiento/BD, Calidad de código, Funcionalidad.
 Tamaño revisado: ~7,000 LOC Python, ~6,100 LOC JSX.
