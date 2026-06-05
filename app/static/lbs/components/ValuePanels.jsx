@@ -343,9 +343,77 @@ function OutputStackPanel({ values, phaseMode, alarms }) {
   );
 }
 
+/* ─── Log de eventos NATIVO del UPS (embebido en Monitoreo) ───────────────── */
+function UpsEventsPanel({ deviceId, deviceName }) {
+  const [eventos, setEventos] = React.useState([]);
+  const [resumen, setResumen] = React.useState({});
+  const [loading, setLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!deviceId) { setEventos([]); setResumen({}); return; }
+    let cancelled = false;
+    const load = () => {
+      setLoading(true);
+      fetch(`/api/monitoreo/eventos/${deviceId}?limit=15`, { credentials: 'same-origin' })
+        .then(r => r.json())
+        .then(j => { if (cancelled) return; setEventos(Array.isArray(j.eventos) ? j.eventos : []); setResumen(j.resumen || {}); })
+        .catch(() => { if (!cancelled) { setEventos([]); setResumen({}); } })
+        .finally(() => { if (!cancelled) setLoading(false); });
+    };
+    load();
+    const id = setInterval(load, 60000);  // refresca cada minuto
+    return () => { cancelled = true; clearInterval(id); };
+  }, [deviceId]);
+
+  const lvlStyle = (n) => {
+    if (n === 'critical') return { background: '#3a0d14', color: '#ff6b81', border: '1px solid #ff3d5e55' };
+    if (n === 'warning')  return { background: '#3a2c0a', color: '#ffb000', border: '1px solid #ffb00055' };
+    return { background: '#0c2233', color: '#46b6ff', border: '1px solid #2a6f9e55' };
+  };
+  const fmtTs = (ts) => ts ? String(ts).slice(0, 19).replace('T', ' ') : '—';
+
+  return (
+    <section className="eng-panel">
+      <div className="eng-head">
+        <h3><i className="bi bi-card-list ico"></i> Log de eventos del UPS</h3>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {resumen.total != null && (
+            <span className="live-badge" style={{ color: 'var(--text-dim)' }}>
+              {resumen.total} ev · {resumen.descargas || 0} descargas
+            </span>
+          )}
+          <a className="btn ghost" href="/eventos" style={{ padding: '4px 10px' }} title="Abrir el log completo con filtros y colección manual">
+            <i className="bi bi-box-arrow-up-right ico"></i> Ver todo
+          </a>
+        </div>
+      </div>
+      <div className="eng-body" style={{ paddingTop: 8, paddingBottom: 8 }}>
+        <div className="log">
+          {loading && eventos.length === 0 && (
+            <div style={{ padding: '14px 12px', textAlign: 'center', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', fontSize: 11 }}>Cargando…</div>
+          )}
+          {!loading && eventos.length === 0 && (
+            <div style={{ padding: '14px 12px', textAlign: 'center', color: 'var(--text-dim)', fontFamily: 'var(--font-mono)', fontSize: 11, letterSpacing: '0.10em' }}>
+              SIN EVENTOS DEL UPS · usa “Ver todo” → COLECTAR DEL UPS
+            </div>
+          )}
+          {eventos.map(e => (
+            <div key={e.id} className="log-line">
+              <span className="ts">{fmtTs(e.ts)}</span>
+              <span className="diag-pill" style={{ ...lvlStyle(e.nivel), padding: '1px 6px', fontSize: 10, borderRadius: 4 }}>{(e.nivel || 'info').toUpperCase()}</span>
+              <span className="msg">{e.evento}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 window.ValuesPanel = ValuesPanel;
 window.LoadAnalysisPanel = LoadAnalysisPanel;
 window.EnvironmentPanel = EnvironmentPanel;
 window.StatusLogPanel = StatusLogPanel;
+window.UpsEventsPanel = UpsEventsPanel;
 window.InputStackPanel = InputStackPanel;
 window.OutputStackPanel = OutputStackPanel;

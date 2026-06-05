@@ -353,7 +353,8 @@ function App() {
           <LoadAnalysisPanel values={values} />
         </div>
 
-        <div className="panels-row" style={{ ['--stagger']: 3 }}>
+        <div className="panels-row" style={{ ['--stagger']: 3, gridTemplateColumns: '1.6fr 1.1fr 0.9fr' }}>
+          <UpsEventsPanel deviceId={activeDevice.id} deviceName={activeDevice.name} />
           <StatusLogPanel log={eventLog} />
           <Toolbox status={statusKind} statusLabel={statusLabel} device={activeDevice} ageText={ageText} />
         </div>
