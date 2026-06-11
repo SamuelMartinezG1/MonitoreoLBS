@@ -40,16 +40,34 @@ function _fmtAgo(ms) {
 }
 
 // Convierte un registro real (de BD o de Socket.IO) al shape que usan los paneles.
-function _liveValuesFrom(d) {
+// `caps` (capacidades del UPS) decide la fuente del contador de descargas y
+// los campos ambientales; `descargasPortal` es el conteo del portal cuando el
+// UPS no expone ciclos propios.
+function _liveValuesFrom(d, caps, descargasPortal) {
   const f = (v, n = 1) => (v == null || isNaN(v)) ? DASH : Number(v).toFixed(n);
   const num = (v) => (v == null || isNaN(v)) ? null : Number(v);
 
   const bat  = num(d.bateria_pct ?? d.bat);
   const load = num(d.carga_pct   ?? d.load);
   const temp = d.temperatura ?? d.temp;
-  const ambT = d.temperatura_ambiente;
+  // SNMP usa temperatura_ambiente; Modbus reporta env_temperature/env_humidity
+  const ambT = d.temperatura_ambiente ?? (d.env_temperature || null);
+  const ambH = d.env_humidity || null;
   const cyc  = d.ciclos_descarga;
   const remain = d.battery_remain_time;
+
+  const hasCycles = !!(caps && caps.has_cycles) && cyc != null && !isNaN(cyc);
+  let discharges, discharges_label;
+  if (hasCycles) {
+    discharges = String(Math.round(Number(cyc)));
+    discharges_label = 'Total descargas (UPS)';
+  } else if (descargasPortal != null) {
+    discharges = String(descargasPortal);
+    discharges_label = 'Descargas (portal)';
+  } else {
+    discharges = ND;
+    discharges_label = 'Total descargas';
+  }
 
   return {
     mode: _modeFromPowerSource(d.power_mode),
@@ -62,14 +80,14 @@ function _liveValuesFrom(d) {
     v_out_l3: f(d.voltaje_out_l3, 1),
     freq_in:  f(d.frecuencia_in, 2),
     freq_out: f(d.frecuencia_out, 2),
-    i_in:  DASH,
+    i_in:  f(d.corriente_in_l1, 1),
     i_out: f(d.corriente_out_l1 ?? d.i_out, 1),
     thd_in: DASH, thd_out: DASH,
     pf: f(d.power_factor, 2),
     eff_rect: DASH, eff_inv: DASH, efficiency: DASH,
     dc_v: DASH, dc_v_rect: DASH, dc_i: DASH,
     bat_v: f(d.voltaje_bateria, 1),
-    bat_i: DASH,
+    bat_i: f(d.corriente_bateria, 1),
     bat_pct:  bat  == null ? DASH : Math.round(bat),
     bat_temp: f(temp, 1),
     load_pct: load == null ? DASH : Math.round(load),
@@ -77,16 +95,16 @@ function _liveValuesFrom(d) {
     load_kva: f(d.apparent_power, 2),
     runtime:  (remain != null && !isNaN(remain) && remain > 0) ? `${Math.round(remain)}m` : DASH,
     temp: f(temp, 1),
-    // Siempre presentes (los pidió el operador): valor real o N/D si el equipo no lo expone
     amb_temp:   (ambT == null || isNaN(ambT)) ? ND : Number(ambT).toFixed(1),
-    discharges: (cyc  == null || isNaN(cyc))  ? ND : String(Math.round(Number(cyc))),
-    amb_humidity: DASH,
+    amb_humidity: (ambH == null || isNaN(ambH)) ? DASH : Number(ambH).toFixed(1),
+    bypass_v: f(d.bypass_voltage_a, 1),
+    discharges, discharges_label,
     _hasData: true,
   };
 }
 
 // Estado «sin datos»: todo en «—», ambiente/descargas en N/D.
-function _emptyValues() {
+function _emptyValues(descargasPortal) {
   return {
     mode: 'nodata', mode_label: 'SIN DATOS',
     v_in: DASH, v_in_l2: DASH, v_in_l3: DASH,
@@ -98,9 +116,22 @@ function _emptyValues() {
     dc_v: DASH, dc_v_rect: DASH, dc_i: DASH,
     bat_v: DASH, bat_i: DASH, bat_pct: DASH, bat_temp: DASH,
     load_pct: DASH, load_kw: DASH, load_kva: DASH, runtime: DASH,
-    temp: DASH, amb_temp: ND, amb_humidity: DASH, discharges: ND,
+    temp: DASH, amb_temp: ND, amb_humidity: DASH, bypass_v: DASH,
+    discharges: descargasPortal != null ? String(descargasPortal) : ND,
+    discharges_label: descargasPortal != null ? 'Descargas (portal)' : 'Total descargas',
     _hasData: false,
   };
+}
+
+// Fecha-hora local corta a partir de un ISO (para "sin conexión desde …")
+function _fmtLocal(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleString('es-MX', {
+      day: '2-digit', month: '2-digit', hour: '2-digit',
+      minute: '2-digit', hour12: false,
+    });
+  } catch (_) { return String(iso).slice(0, 16).replace('T', ' '); }
 }
 
 // ─── Componente principal ────────────────────────────────────────────────────
@@ -138,6 +169,9 @@ function App() {
   // ── Estado de datos en vivo ──
   const [liveData, setLiveData]       = useState(null);
   const [conn, setConn]               = useState('nodata');  // nodata | online | offline
+  const [connInfo, setConnInfo]       = useState(null);      // causa/fecha de desconexión
+  const [caps, setCaps]               = useState(null);      // capacidades del UPS
+  const [descargasPortal, setDescargasPortal] = useState(null);
   const [lastUpdateAt, setLastUpdate] = useState(null);
   const [alarmsLive, setAlarmsLive]   = useState([]);
   const [series, setSeries]           = useState({ voltage: [], load: [], battery: [] });
@@ -157,19 +191,26 @@ function App() {
 
     // Limpia estado al cambiar de equipo
     setLiveData(null); setAlarmsLive([]); setLastUpdate(null);
+    setConnInfo(null); setCaps(null); setDescargasPortal(null);
     setSeries({ voltage: [], load: [], battery: [] });
 
-    // 1. Último estado conocido en BD
+    // 1. Último estado conocido en BD (+ conexión, capacidades y descargas)
     if (window.LBS_API) {
       window.LBS_API.getUltimoEstado(activeDevice.id).then(r => {
         if (cancelled) return;
+        if (r) {
+          if (r.connection) setConnInfo(r.connection);
+          if (r.capabilities) setCaps(r.capabilities);
+          if (r.descargas_portal != null) setDescargasPortal(r.descargas_portal);
+        }
         if (r && r.data) {
           setLiveData(r.data);
           const ts = r.data.timestamp ? Date.parse(r.data.timestamp) : Date.now();
           setLastUpdate(ts);
-          setConn((Date.now() - ts) > STALE_MS ? 'offline' : 'online');
+          const confirmedOffline = r.connection && r.connection.status === 'offline';
+          setConn(confirmedOffline || (Date.now() - ts) > STALE_MS ? 'offline' : 'online');
         } else {
-          setConn('nodata');
+          setConn(r && r.connection && r.connection.status === 'offline' ? 'offline' : 'nodata');
         }
       }).catch(() => { if (!cancelled) setConn('nodata'); });
     }
@@ -178,14 +219,20 @@ function App() {
     if (!window.io) return () => { cancelled = true; };
     const handle = (payload) => {
       if (cancelled || !payload || String(payload.id) !== String(activeDevice.id)) return;
+      if (payload.connection) setConnInfo(payload.connection);
+      if (payload.capabilities) setCaps(payload.capabilities);
+      if (payload.descargas_portal != null) setDescargasPortal(payload.descargas_portal);
       const hasData = payload.status === 'online' &&
                       payload.data && Object.keys(payload.data).length > 0;
       if (hasData) {
         setLiveData(payload.data);
-        setLastUpdate(Date.now());
+        // Con enlace degradado los datos son la última lectura BUENA cacheada:
+        // no refrescar "última lectura" para no aparentar telemetría fresca.
+        const degraded = payload.connection && payload.connection.link_quality === 'degraded';
+        if (!degraded) setLastUpdate(Date.now());
         setConn('online');
         setAlarmsLive(Array.isArray(payload.alarms) ? payload.alarms : []);
-      } else if (payload.status === 'offline') {
+      } else if (payload.status === 'offline' || payload.status === 'unknown') {
         setConn('offline');
         setAlarmsLive(Array.isArray(payload.alarms) ? payload.alarms : []);
       }
@@ -230,29 +277,38 @@ function App() {
                 ? 'Sin datos'
                 : (lastUpdateAt ? _fmtAgo(nowTick - lastUpdateAt) : DASH);
 
-  // Log de estado REAL: registra transiciones de estado del equipo
-  const prevStatusRef = useRef(null);
-  useEffect(() => { prevStatusRef.current = null; setEventLog([]); }, [activeDevice.id]);
+  // Log de estado REAL: eventos del PORTAL persistidos en el servidor
+  // (conexión perdida/restablecida con causa, descargas, alarmas). Antes
+  // vivía solo en memoria del navegador y se perdía al recargar.
   useEffect(() => {
-    if (prevStatusRef.current === statusKind) return;
-    const first = prevStatusRef.current === null;
-    prevStatusRef.current = statusKind;
-    if (first && statusKind === 'nodata') return; // evita ruido en el arranque
-    const M = {
-      online:  ['info', 'Equipo en línea · recibiendo datos SNMP'],
-      battery: ['warn', 'Operando en batería (respaldo)'],
-      bypass:  ['warn', 'Bypass estático activo'],
-      fault:   ['err',  'Falla reportada por el equipo'],
-      offline: ['err',  'Sin conexión · el equipo no responde'],
-      nodata:  ['warn', 'Sin datos de monitoreo para este equipo'],
+    if (!activeDevice.id) { setEventLog([]); return; }
+    let cancelled = false;
+    const lvlMap = { critical: 'err', warning: 'warn', info: 'info' };
+    const load = () => {
+      fetch(`/api/monitoreo/eventos/${activeDevice.id}?fuente=portal&limit=14`,
+            { credentials: 'same-origin' })
+        .then(r => r.json())
+        .then(j => {
+          if (cancelled) return;
+          const evs = Array.isArray(j.eventos) ? j.eventos : [];
+          setEventLog(evs.map(e => ({
+            ts: _fmtLocal(e.ts),
+            lvl: lvlMap[e.nivel] || 'info',
+            msg: e.evento,
+          })));
+        })
+        .catch(() => {});
     };
-    const [lvl, msg] = M[statusKind] || ['info', 'Estado actualizado'];
-    const ts = new Date().toLocaleTimeString('es-MX', { hour12: false });
-    setEventLog(p => [{ ts, lvl, msg }, ...p].slice(0, 14));
-  }, [statusKind]);
+    load();
+    const id = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [activeDevice.id]);
 
   // Valores a mostrar: reales si hay lectura, si no «—»/«N/D»
-  const values = useMemo(() => liveData ? _liveValuesFrom(liveData) : _emptyValues(), [liveData]);
+  const values = useMemo(
+    () => liveData ? _liveValuesFrom(liveData, caps, descargasPortal)
+                   : _emptyValues(descargasPortal),
+    [liveData, caps, descargasPortal]);
   const hasData = values._hasData;
 
   // Alarmas reales emitidas por el backend
@@ -263,23 +319,36 @@ function App() {
     detail: a.msg || '',
   })), [alarmsLive]);
 
-  const phaseMode = t.phaseMode || 'single';
+  // Fases automáticas según el capability set del UPS (el tweak puede forzar
+  // trifásico en un equipo monofásico para inspección, pero no al revés).
+  const phaseMode = (caps && caps.phases === 3) ? 'three' : (t.phaseMode || 'single');
+
+  // Enlace degradado: el poll falla pero aún no se confirma la desconexión
+  const linkDegraded = !!(connInfo && connInfo.link_quality === 'degraded')
+                       && statusKind !== 'offline';
 
   // Etiquetas de estado
   const statusLabel = {
     online: 'EN LÍNEA', battery: 'BATERÍA', bypass: 'BYPASS',
     fault: 'FALLA', offline: 'SIN CONEXIÓN', nodata: 'SIN DATOS',
   }[statusKind] || 'SIN DATOS';
-  const statusSub = {
-    online: 'Doble conversión · Estable',
-    battery: 'Operando con respaldo',
-    bypass: 'Switch estático activo',
-    fault: 'Inversor offline',
-    offline: `Última lectura ${ageText}`,
-    nodata: 'Esperando monitoreo',
-  }[statusKind] || 'Esperando monitoreo';
+  // Para offline: CAUSA detallada + desde cuándo (del ConnectionTracker)
+  const offlineSub = connInfo && connInfo.status === 'offline'
+    ? `${connInfo.offline_reason_label || 'El equipo no responde'}`
+      + (connInfo.offline_since ? ` · desde ${_fmtLocal(connInfo.offline_since)}` : '')
+    : `Última lectura ${ageText}`;
+  const statusSub = linkDegraded
+    ? `Enlace inestable — ${connInfo.offline_reason_label || 'fallas intermitentes de lectura'}`
+    : {
+        online: 'Doble conversión · Estable',
+        battery: 'Operando con respaldo',
+        bypass: 'Switch estático activo',
+        fault: 'Inversor offline',
+        offline: offlineSub,
+        nodata: 'Esperando monitoreo',
+      }[statusKind] || 'Esperando monitoreo';
   const ringCls = (statusKind === 'fault' || statusKind === 'offline') ? 'err'
-                : statusKind === 'online' ? '' : 'warn';
+                : (statusKind === 'online' && !linkDegraded) ? '' : 'warn';
 
   // Render de un valor con sufijo, respetando «—»/«N/D»
   const stat = (v, unit) => (v === DASH || v === ND || v == null)
@@ -308,6 +377,11 @@ function App() {
             <span className={"ring " + ringCls}></span>
             <div className="label">
               {statusLabel}
+              {linkDegraded && (
+                <span className="live-badge" style={{ color: 'var(--warn)', marginLeft: 8 }}>
+                  ENLACE INESTABLE
+                </span>
+              )}
               <small>{statusSub}</small>
             </div>
           </div>
@@ -324,12 +398,14 @@ function App() {
             <div className="v">{stat(values.bat_pct, '%')}</div>
           </div>
           <div className="th-stat">
-            <label>Temp. ambiente</label>
-            <div className="v">{stat(values.amb_temp, '°C')}</div>
+            {/* Si el UPS no tiene sensor de ambiente, este tile muestra la
+                temperatura de batería real en vez de un N/D perpetuo */}
+            <label>{(caps && !caps.has_ambient) ? 'Temp. batería' : 'Temp. ambiente'}</label>
+            <div className="v">{stat((caps && !caps.has_ambient) ? values.bat_temp : values.amb_temp, '°C')}</div>
           </div>
           <div className="th-stat">
-            <label>Descargas</label>
-            <div className="v">{stat(values.discharges, 'ciclos')}</div>
+            <label>{values.discharges_label || 'Descargas'}</label>
+            <div className="v">{stat(values.discharges, '')}</div>
           </div>
           <div className="th-stat">
             <label>Autonomía</label>
@@ -338,14 +414,14 @@ function App() {
         </section>
 
         <div className="trio-row" style={{ ['--stagger']: 1 }}>
-          <InputStackPanel values={values} phaseMode={phaseMode} />
+          <InputStackPanel values={values} phaseMode={phaseMode} caps={caps} />
           <UpsDiagram
             values={values}
             mode={statusKind}
             phaseMode={phaseMode}
             showParticles={t.showParticles !== false && hasData}
           />
-          <OutputStackPanel values={values} phaseMode={phaseMode} alarms={alarms} />
+          <OutputStackPanel values={values} phaseMode={phaseMode} alarms={alarms} caps={caps} />
         </div>
 
         <div className="panels-row" style={{ ['--stagger']: 2, gridTemplateColumns: '1.7fr 1fr' }}>

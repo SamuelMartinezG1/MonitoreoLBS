@@ -8,6 +8,10 @@ import os
 import logging
 from pysnmp.hlapi.v3arch.asyncio import *
 
+from app.services import poll_errors
+from app.services.poll_errors import PollFailure
+from app.services.protocols.snmp_upsmib_client import classify_error_indication
+
 logger = logging.getLogger(__name__)
 
 # Timeouts tolerantes a enlaces lentos/intermitentes (p.ej. UPS por SIM/ZeroTier).
@@ -66,29 +70,39 @@ class MinimalSNMPClient:
                 *objetos
             )
             
-            # Si hay error, intentar fallback o retornar vacio
+            # Si hay error, intentar fallback o reportar la causa
             if errorIndication or errorStatus:
                 logger.warning(f"Error SNMP agrupado {target_ip}: {errorIndication or errorStatus}. Intentando individual...")
                 # Fallback: consultar uno a uno (lento pero seguro en hardware viejo)
                 raw_data = {}
-                keys = list(self.MINIMAL_OIDS.keys())
+                last_err = None
                 for key, oid in self.MINIMAL_OIDS.items():
                     try:
-                        _, errSt, _, vb = await get_cmd(
+                        errInd, errSt, _, vb = await get_cmd(
                              self.engine,
                              CommunityData(self.community, mpModel=self.mp_model),
                              transport,
                              ContextData(),
                              ObjectType(ObjectIdentity(oid))
                         )
-                        if not errSt and vb:
+                        if errInd or errSt:
+                            last_err = errInd or errSt
+                        elif vb:
                             raw_data[key] = vb[0][1].prettyPrint()
-                    except:
-                        pass
-                
+                    except Exception as e:
+                        last_err = e
+
                 if raw_data:
                     return self._format_minimal_data(raw_data)
-                return {}
+                # Ningún OID respondió: reportar la causa del intento agrupado
+                origin = errorIndication or last_err or errorStatus
+                if errorIndication is not None:
+                    code = classify_error_indication(errorIndication)
+                elif isinstance(last_err, Exception):
+                    code, _ = poll_errors.classify_exception(last_err)
+                else:
+                    code = poll_errors.PROTOCOL_ERROR
+                raise PollFailure(code, str(origin))
             
             # Mapear respuestas agrupadas
             keys = list(self.MINIMAL_OIDS.keys())
@@ -102,12 +116,15 @@ class MinimalSNMPClient:
             data = self._format_minimal_data(raw_data)
             
             logger.info(f"✓ UPS Megatec {target_ip}: {data.get('input_voltage_l1', 0)}V In, {data.get('battery_voltage', 0)}V Bat")
-            
+
             return data
-            
+
+        except PollFailure:
+            raise
         except Exception as e:
             logger.error(f"Error consultando UPS {target_ip}: {e}")
-            return {}
+            code, detail = poll_errors.classify_exception(e)
+            raise PollFailure(code, detail) from e
     
     def _format_minimal_data(self, raw):
         """
@@ -167,7 +184,9 @@ class MinimalSNMPClient:
             # Metadatos
             '_phases': 1,  # Es monofásico
             '_ups_type': 'megatec_snmp',
-            '_data_quality': 'good_basic', 
+            '_data_quality': 'good_basic',
+            # OIDs que SÍ respondieron (para el capability set del dispositivo)
+            '_raw_keys': list(raw.keys()),
         }
         
         return data

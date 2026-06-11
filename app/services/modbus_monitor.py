@@ -22,12 +22,16 @@ El cleanup periódico lo hace APScheduler (en `run_monitor.py`).
 import os
 import time
 import math
+import socket
 import threading
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
 from pymodbus.client import ModbusTcpClient
 
+from app.services import capabilities
+from app.services import poll_errors
+from app.services.connection_tracker import tracker
 from app.services.pg_metrics import influx_service
 from app.base_datos import GestorDB
 from app.extensions import socketio
@@ -134,18 +138,52 @@ ALARM_THRESHOLDS = {
 # ============================================================================
 # Helpers
 # ============================================================================
-def _safe_read(client, address, count, slave=1):
-    """Lectura segura con reintentos."""
+def _safe_read(client, address, count, slave=1, errors_out=None):
+    """Lectura segura con reintentos. `errors_out` (lista opcional) acumula la
+    causa de cada fallo para poder diagnosticar el offline."""
     for attempt in range(3):
         try:
             result = client.read_holding_registers(address, count, slave=slave)
             if not result.isError():
                 return result.registers
+            if errors_out is not None:
+                errors_out.append(('modbus_exception', f'dir {address}: {result}'))
         except Exception as e:
             logger.debug("Intento %d en dir %s: %s", attempt + 1, address, e)
+            if errors_out is not None:
+                errors_out.append(('exception', f'dir {address}: {type(e).__name__}: {e}'))
             if attempt < 2:
                 time.sleep(0.5)
     return None
+
+
+def _classify_tcp_failure(ip, port, timeout=4):
+    """(code, detail) de por qué no se pudo leer por Modbus.
+
+    Corre SOLO en el camino de falla (no penaliza el camino feliz): una
+    conexión TCP cruda distingue puerto cerrado / sin ruta / timeout. Si el
+    TCP abre pero pymodbus no pudo leer, el problema es de protocolo
+    (unit id, offsets o servicio Modbus caído detrás del puerto).
+    """
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            pass
+    except OSError as e:
+        return poll_errors.classify_oserror(e), str(e)
+    except Exception as e:
+        return poll_errors.UNKNOWN, str(e)
+    return (poll_errors.PROTOCOL_ERROR,
+            'TCP abre pero Modbus no responde (unit id/offset/servicio)')
+
+
+def _classify_read_failure(read_errors):
+    """(code, detail) cuando el TCP conectó pero la lectura no entregó datos."""
+    last = read_errors[-1][1] if read_errors else ''
+    low = last.lower()
+    if 'timed out' in low or 'timeout' in low:
+        return poll_errors.TIMEOUT, last
+    return (poll_errors.PROTOCOL_ERROR,
+            last or 'conexión TCP OK pero Modbus no entregó registros (unit id/offset)')
 
 
 def _is_numeric(value) -> bool:
@@ -275,6 +313,18 @@ class ModbusMonitor:
         # Cache del último estado por dispositivo (para historial periódico)
         self._ultimo_estado: dict[str, dict] = {}
 
+        # Capability set por dispositivo (persiste a BD solo si cambia)
+        self._caps = capabilities.CapsCache(self.db)
+
+    # ------------------------------------------------------------------ #
+    # Acceso para rutas / MonitoringService                               #
+    # ------------------------------------------------------------------ #
+    def get_runtime_data(self, dev_id) -> dict | None:
+        return self._ultimo_estado.get(str(dev_id))
+
+    def get_capabilities(self, dev_id) -> dict | None:
+        return self._caps.get(dev_id)
+
     # ------------------------------------------------------------------ #
     # Vida del thread                                                     #
     # ------------------------------------------------------------------ #
@@ -397,24 +447,27 @@ class ModbusMonitor:
         sitio = dev.get('sitio_nombre', '')
 
         client = ModbusTcpClient(ip, port=port, timeout=int(os.environ.get('MODBUS_TIMEOUT_S', 8)))
+        read_errors: list = []
         try:
             try:
                 connected = client.connect()
-            except Exception:
+            except Exception as e:
+                read_errors.append(('exception', f'connect: {type(e).__name__}: {e}'))
                 connected = False
 
             data: dict = {}
             status_data: dict = {}
             alarms: list = []
-            device_status = 'offline'
+            poll_ok = False
             now = time.monotonic()
 
             if connected:
                 try:
                     # 1. Parámetros eléctricos (cada ciclo)
-                    regs = _safe_read(client, UPS_BLOCK_START, UPS_BLOCK_COUNT, slave)
+                    regs = _safe_read(client, UPS_BLOCK_START, UPS_BLOCK_COUNT, slave,
+                                      errors_out=read_errors)
                     if regs:
-                        device_status = 'online'
+                        poll_ok = True
                         for key, info in REGISTER_MAP.items():
                             pos = info['pos']
                             if pos < len(regs):
@@ -472,11 +525,34 @@ class ModbusMonitor:
             except Exception:
                 pass
 
+        # Estado CONFIRMADO por el tracker (histéresis para el enlace flaky)
+        if poll_ok:
+            conn_state = tracker.report_success(dev_id, name)
+            if status_data:
+                # Solo en ciclos donde se leyó el bloque de estado: evita
+                # falsos DISCHARGE_END por ausencia de lectura.
+                tracker.report_power_state(
+                    dev_id, name, status_data.get('battery_status_raw') == 4)
+            tracker.report_alarms(dev_id, name, alarms)
+            self._caps.update(
+                dev_id, capabilities.from_modbus(data, status_data, mapped, ups_type))
+        else:
+            if connected:
+                code, detail = _classify_read_failure(read_errors)
+            else:
+                code, detail = _classify_tcp_failure(ip, port)
+            conn_state = tracker.report_failure(dev_id, name, code, detail)
+
+        device_status = conn_state.get('status', 'offline')
+
         # Actualizar cache para historial periódico
-        if device_status == 'online' and mapped:
+        if poll_ok and mapped:
             self._ultimo_estado[str(dev_id)] = mapped
         elif device_status == 'offline':
             self._ultimo_estado.pop(str(dev_id), None)
+        if not poll_ok and device_status != 'offline':
+            # Falla aún sin confirmar: servir la última lectura buena
+            mapped = self._ultimo_estado.get(str(dev_id), mapped)
 
         # Emitir update por Socket.IO
         try:
@@ -490,12 +566,15 @@ class ModbusMonitor:
                 'status_data': status_data,
                 'alarms':      alarms,
                 'timestamp':   time.time(),
+                'connection':       conn_state,
+                'capabilities':     self._caps.get(dev_id),
+                'descargas_portal': tracker.get_discharge_count(dev_id),
             })
         except Exception as e:
             logger.debug("socketio.emit Modbus dev %s: %s", dev_id, e)
 
         # Encolar métricas (con lock — múltiples workers escriben)
-        if device_status == 'online' and mapped:
+        if poll_ok and mapped:
             now = time.monotonic()
             last_m = self._last_metric_write.get(dev_id, 0.0)
             if now - last_m >= self._metrics_interval:
@@ -531,7 +610,8 @@ class ModbusMonitor:
             'voltaje_out_l2': data.get('output_voltage_b', 0),
             'voltaje_out_l3': data.get('output_voltage_c', 0),
             'frecuencia_out': data.get('output_frequency_a', 0),
-            # Corrientes salida
+            # Corrientes
+            'corriente_in_l1':  data.get('input_current_a', 0),
             'corriente_out_l1': data.get('output_current_a', 0),
             'corriente_out_l2': data.get('output_current_b', 0),
             'corriente_out_l3': data.get('output_current_c', 0),

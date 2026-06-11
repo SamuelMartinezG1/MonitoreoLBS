@@ -12,7 +12,24 @@ from pysnmp.hlapi.v3arch.asyncio import (
     ObjectType, ObjectIdentity, get_cmd
 )
 
+from app.services import poll_errors
+from app.services.poll_errors import PollFailure
+
 logger = logging.getLogger(__name__)
+
+
+def classify_error_indication(error_indication) -> str:
+    """Mapea el errorIndication de pysnmp a un código de poll_errors."""
+    try:
+        from pysnmp.proto import errind
+        if isinstance(error_indication, errind.RequestTimedOut):
+            return poll_errors.TIMEOUT
+    except ImportError:
+        pass
+    text = str(error_indication).lower()
+    if 'timeout' in text or 'timed out' in text or 'before timeout' in text:
+        return poll_errors.TIMEOUT
+    return poll_errors.PROTOCOL_ERROR
 
 # Timeouts tolerantes a enlaces lentos/intermitentes (configurables por entorno).
 _DEF_TIMEOUT = int(os.environ.get('SNMP_TIMEOUT_S', 5))
@@ -137,8 +154,12 @@ class UPSMIBClient:
             
             if errorIndication:
                 logger.error(f"Error crítico SNMP en {target_ip}: {errorIndication}")
-                return {}
-            
+                raise PollFailure(classify_error_indication(errorIndication),
+                                  str(errorIndication))
+            if errorStatus:
+                raise PollFailure(poll_errors.PROTOCOL_ERROR,
+                                  f'{errorStatus.prettyPrint()} en OID #{errorIndex}')
+
             # Mapear respuestas (tolerante a OIDs faltantes)
             keys = list(oids_to_query.keys())
             raw_data = {}
@@ -147,13 +168,20 @@ class UPSMIBClient:
                 # Solo guardar si el valor es válido
                 if 'No Such Object' not in value_str and 'No Such Instance' not in value_str:
                     raw_data[keys[i]] = value_str
-            
+
+            if not raw_data:
+                raise PollFailure(poll_errors.NO_DATA,
+                                  'todos los OIDs respondieron No Such Object')
+
             # Formatear datos
             return self._format_data(raw_data)
-            
+
+        except PollFailure:
+            raise
         except Exception as e:
             logger.error(f"Error en UPSMIBClient para {target_ip}: {e}")
-            return {}
+            code, detail = poll_errors.classify_exception(e)
+            raise PollFailure(code, detail) from e
     
     def _format_data(self, raw: Dict[str, str]) -> Dict[str, Any]:
         """Convierte valores SNMP a formato del dashboard."""
@@ -181,6 +209,9 @@ class UPSMIBClient:
             # Metadata
             '_phases': phases,
             '_ups_type': 'ups_mib_standard',
+            # OIDs que SÍ respondieron — base para el capability set del
+            # dispositivo (el resto de este dict rellena ausentes con 0).
+            '_raw_keys': list(raw.keys()),
             
             # Identificación
             'manufacturer': raw.get('ident_manufacturer', ''),

@@ -178,40 +178,41 @@ class GestorDB:
             logger.error("insertar_eventos_ups: %s", e)
             return insertados
 
-    def obtener_eventos_ups(self, device_id, limit=500, nivel=None):
-        """Eventos de un UPS, más recientes primero. Filtro opcional por nivel."""
+    def obtener_eventos_ups(self, device_id, limit=500, nivel=None, fuente=None):
+        """Eventos de un UPS, más recientes primero. Filtros opcionales por
+        nivel y por fuente: 'portal' (generados por el portal: conexión,
+        descargas, alarmas) o 'ups' (nativos colectados del equipo)."""
         try:
             with self.pool.get_connection() as conn:
                 cur = conn.cursor()
+                where = ["device_id = %s"]
+                params: list = [device_id]
                 if nivel:
-                    cur.execute(
-                        """
-                        SELECT id, device_id, ts, fuente, evento, nivel, raw, created_at
-                          FROM ups_event_log
-                         WHERE device_id = %s AND nivel = %s
-                         ORDER BY ts DESC NULLS LAST, id DESC
-                         LIMIT %s
-                        """,
-                        (device_id, nivel, limit),
-                    )
-                else:
-                    cur.execute(
-                        """
-                        SELECT id, device_id, ts, fuente, evento, nivel, raw, created_at
-                          FROM ups_event_log
-                         WHERE device_id = %s
-                         ORDER BY ts DESC NULLS LAST, id DESC
-                         LIMIT %s
-                        """,
-                        (device_id, limit),
-                    )
+                    where.append("nivel = %s")
+                    params.append(nivel)
+                if fuente == 'portal':
+                    where.append("fuente = 'Portal'")
+                elif fuente == 'ups':
+                    where.append("fuente IS DISTINCT FROM 'Portal'")
+                params.append(limit)
+                cur.execute(
+                    f"""
+                    SELECT id, device_id, ts, fuente, evento, nivel, raw, code, created_at
+                      FROM ups_event_log
+                     WHERE {' AND '.join(where)}
+                     ORDER BY ts DESC NULLS LAST, id DESC
+                     LIMIT %s
+                    """,
+                    params,
+                )
                 return [dict(r) for r in cur.fetchall()]
         except Exception as e:
             logger.error("obtener_eventos_ups: %s", e)
             return []
 
     def resumen_eventos_ups(self, device_id):
-        """Conteo por nivel + total de descargas (eventos 'discharg'/'EOD')."""
+        """Conteo por nivel + descargas (texto y exactas del portal) +
+        desconexiones registradas por el portal."""
         try:
             with self.pool.get_connection() as conn:
                 cur = conn.cursor()
@@ -223,6 +224,8 @@ class GestorDB:
                         COUNT(*) FILTER (WHERE nivel = 'warning')             AS warnings,
                         COUNT(*) FILTER (WHERE evento ILIKE '%%discharg%%')   AS descargas,
                         COUNT(*) FILTER (WHERE evento ILIKE '%%EOD%%')        AS eod,
+                        COUNT(*) FILTER (WHERE code = 'DISCHARGE_START')      AS descargas_portal,
+                        COUNT(*) FILTER (WHERE code = 'CONN_LOST')            AS desconexiones,
                         MIN(ts) AS desde, MAX(ts) AS hasta
                       FROM ups_event_log
                      WHERE device_id = %s
@@ -234,6 +237,89 @@ class GestorDB:
         except Exception as e:
             logger.error("resumen_eventos_ups: %s", e)
             return {}
+
+    # ====================================================================== #
+    # Eventos del PORTAL (fuente='Portal' en ups_event_log)                   #
+    # ====================================================================== #
+    def insertar_evento_portal(self, device_id, code, evento,
+                               nivel='info', raw=None, ts=None):
+        """Evento generado por el portal (conexión / descargas / alarmas).
+        `ts` es el instante real de la transición (UTC con microsegundos),
+        así no colisiona con el dedupe UNIQUE(device_id, ts, evento)."""
+        from datetime import datetime, timezone
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO ups_event_log
+                        (device_id, ts, fuente, evento, nivel, raw, code)
+                    VALUES (%s, %s, 'Portal', %s, %s, %s, %s)
+                    ON CONFLICT (device_id, ts, evento) DO NOTHING
+                    """,
+                    (device_id, ts or datetime.now(timezone.utc),
+                     evento, nivel, raw, code),
+                )
+                return True
+        except Exception as e:
+            logger.error("insertar_evento_portal: %s", e)
+            return False
+
+    def obtener_ultimo_evento_portal(self, device_id, codes):
+        """Último evento del portal cuyo code esté en `codes` (para sembrar
+        el ConnectionTracker tras un reinicio sin duplicar eventos)."""
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT id, ts, code, evento, nivel, raw
+                      FROM ups_event_log
+                     WHERE device_id = %s AND fuente = 'Portal'
+                       AND code = ANY(%s)
+                     ORDER BY ts DESC NULLS LAST, id DESC
+                     LIMIT 1
+                    """,
+                    (device_id, list(codes)),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.debug("obtener_ultimo_evento_portal: %s", e)
+            return None
+
+    def contar_descargas_portal(self, device_id) -> int:
+        """Total de descargas de batería registradas por el portal."""
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS n FROM ups_event_log
+                     WHERE device_id = %s AND code = 'DISCHARGE_START'
+                    """,
+                    (device_id,),
+                )
+                row = cur.fetchone()
+                return int(row['n']) if row else 0
+        except Exception as e:
+            logger.debug("contar_descargas_portal: %s", e)
+            return 0
+
+    def actualizar_capacidades(self, device_id, caps: dict) -> bool:
+        """Persiste el capability set detectado (JSONB en monitoreo_config)."""
+        import json
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE monitoreo_config SET capabilities = %s WHERE id = %s",
+                    (json.dumps(caps), device_id),
+                )
+                return True
+        except Exception as e:
+            logger.error("actualizar_capacidades: %s", e)
+            return False
 
     # ====================================================================== #
     # Sitios                                                                  #

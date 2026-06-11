@@ -1,6 +1,7 @@
 from flask import Blueprint, render_template, request, jsonify, current_app, Response, redirect, url_for
 from flask_login import login_required
 from app.permisos import permiso_requerido, requiere_rol
+from app.services.connection_tracker import tracker
 import requests
 import re
 import ipaddress
@@ -9,6 +10,18 @@ import logging
 logger = logging.getLogger(__name__)
 
 monitoreo_bp = Blueprint('monitoreo', __name__)
+
+
+def _caps_for(db, monitor, dev_id, dev_row=None):
+    """Capability set: runtime si el monitor ya lo calculó; si no, el último
+    persistido en monitoreo_config.capabilities (arranque frío / offline)."""
+    caps = monitor.get_capabilities(dev_id) if monitor else None
+    if caps is not None:
+        return caps
+    if dev_row is None:
+        dev_row = next(
+            (d for d in db.obtener_monitoreo_ups() if d.get('id') == dev_id), None)
+    return (dev_row or {}).get('capabilities')
 
 
 # NOTE: la vista de /monitoreo ahora la sirve `lbs_bp` con el nuevo diseño.
@@ -72,12 +85,61 @@ def autoset_scan():
 @login_required
 @permiso_requerido('scada')
 def ultimo_estado(device_id):
-    """Retorna los últimos datos conocidos del dispositivo desde la DB."""
+    """Últimos datos conocidos + estado de conexión confirmado, capacidades
+    del equipo y total de descargas registradas por el portal."""
     db = current_app.db
+    monitor = getattr(current_app, 'monitor', None)
     dato = db.obtener_ultimo_estado(device_id)
-    if dato:
-        return jsonify({'status': 'ok', 'data': dato})
-    return jsonify({'status': 'sin_datos', 'data': None})
+    return jsonify({
+        'status': 'ok' if dato else 'sin_datos',
+        'data': dato,
+        'connection': tracker.get_state(device_id),
+        'capabilities': _caps_for(db, monitor, device_id),
+        'descargas_portal': tracker.get_discharge_count(device_id),
+    })
+
+
+@monitoreo_bp.route('/api/monitoreo/estado-flota')
+@login_required
+@permiso_requerido('scada')
+def estado_flota():
+    """Resumen en vivo de toda la flota (una sola llamada para el dashboard):
+    estado de conexión con causa, métricas clave y alarmas activas por UPS."""
+    db = current_app.db
+    monitor = getattr(current_app, 'monitor', None)
+    flota = []
+    for dev in db.obtener_monitoreo_ups():
+        dev_id = dev['id']
+        data = monitor.get_runtime_data(dev_id) if monitor else None
+        fresco = data is not None
+        if data is None:
+            # Arranque frío: última lectura persistida en historial
+            data = db.obtener_ultimo_estado(dev_id) or {}
+        flota.append({
+            'id':            dev_id,
+            'nombre':        dev.get('nombre'),
+            'ip':            dev.get('ip'),
+            'protocolo':     dev.get('protocolo'),
+            'ups_type':      dev.get('ups_type'),
+            'fases':         dev.get('fases'),
+            'sitio_id':      dev.get('sitio_id'),
+            'sitio_nombre':  dev.get('sitio_nombre'),
+            'activo':        dev.get('activo'),
+            'connection':    tracker.get_state(dev_id),
+            'data_fresca':   fresco,
+            'timestamp':     data.get('timestamp'),
+            'carga_pct':     data.get('carga_pct'),
+            'bateria_pct':   data.get('bateria_pct'),
+            'temperatura':   data.get('temperatura'),
+            'voltaje_in_l1': data.get('voltaje_in_l1'),
+            'voltaje_out_l1': data.get('voltaje_out_l1'),
+            'battery_remain_time': data.get('battery_remain_time'),
+            'power_mode':    data.get('power_mode'),
+            'alarmas_activas':  tracker.get_active_alarms(dev_id),
+            'capabilities':     _caps_for(db, monitor, dev_id, dev),
+            'descargas_portal': tracker.get_discharge_count(dev_id),
+        })
+    return jsonify({'status': 'ok', 'devices': flota})
 
 
 # =========================================================================
@@ -509,14 +571,18 @@ def recording_csv(recording_id):
 @login_required
 @permiso_requerido('scada')
 def listar_eventos_ups(device_id):
-    """Historial de eventos que el propio UPS registra (cortes, descargas, bypass…)."""
+    """Historial de eventos del UPS + eventos del portal (conexión, descargas,
+    alarmas). Filtros: ?nivel=critical|warning|info y ?fuente=portal|ups."""
     db = current_app.db
     try:
         limit = min(int(request.args.get('limit', 500)), 2000)
     except (TypeError, ValueError):
         limit = 500
     nivel = request.args.get('nivel') or None
-    eventos = db.obtener_eventos_ups(device_id, limit=limit, nivel=nivel)
+    fuente = (request.args.get('fuente') or '').strip().lower() or None
+    if fuente not in (None, 'portal', 'ups'):
+        fuente = None
+    eventos = db.obtener_eventos_ups(device_id, limit=limit, nivel=nivel, fuente=fuente)
     for e in eventos:
         if e.get('ts'):
             e['ts'] = e['ts'].isoformat()

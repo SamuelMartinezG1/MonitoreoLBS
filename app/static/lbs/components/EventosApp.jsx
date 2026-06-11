@@ -11,6 +11,27 @@ function _lvlStyle(n) {
 }
 const _fmtTs = (ts) => ts ? String(ts).slice(0, 19).replace('T', ' ') : '—';
 
+// Eventos nativos con el reloj del UPS desajustado (p.ej. fechas de 2016):
+// la fecha NO se corrige (es la que registró el equipo) pero se marca con ⚠
+// y el tooltip muestra cuándo se colectó realmente.
+const _clockSkewed = (e) => {
+  if (!e || !e.ts || e.fuente === 'Portal') return false;
+  const year = parseInt(String(e.ts).slice(0, 4), 10);
+  return Number.isFinite(year) && year < 2020;
+};
+
+// Fecha mostrada: eventos del Portal (ts UTC con zona) en hora local;
+// eventos nativos crudos tal como los registró el UPS.
+const _fmtTsSmart = (e) => {
+  if (!e || !e.ts) return '—';
+  if (e.fuente === 'Portal') {
+    try {
+      return new Date(e.ts).toLocaleString('es-MX', { hour12: false });
+    } catch (_) { /* cae al formato crudo */ }
+  }
+  return _fmtTs(e.ts);
+};
+
 function EventosApp() {
   const [t, setTweak] = useTweaks(window.TWEAK_DEFAULTS);
   const accent = t.accent || '#00b4ff';
@@ -34,6 +55,7 @@ function EventosApp() {
   const [loading,  setLoading]  = useStateE(false);
   const [busy,     setBusy]     = useStateE(false);
   const [nivel,    setNivel]    = useStateE('');
+  const [fuente,   setFuente]   = useStateE('');   // '' | 'portal' | 'ups'
   const [filter,   setFilter]   = useStateE('');
 
   // Auto-selecciona el primer UPS cuando llega la lista
@@ -44,11 +66,13 @@ function EventosApp() {
 
   const devId = selected ? (selected._raw_id || selected.id) : null;
 
-  const loadEvents = async (id) => {
+  const loadEvents = async (id, src) => {
     if (!id) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/monitoreo/eventos/${id}?limit=1000`, { credentials: 'same-origin' });
+      const q = src || fuente;
+      const res = await fetch(`/api/monitoreo/eventos/${id}?limit=1000${q ? '&fuente=' + q : ''}`,
+                              { credentials: 'same-origin' });
       const j = await res.json();
       setEventos(Array.isArray(j.eventos) ? j.eventos : []);
       setResumen(j.resumen || {});
@@ -60,7 +84,7 @@ function EventosApp() {
     }
   };
 
-  useEffectE(() => { loadEvents(devId); /* eslint-disable-next-line */ }, [devId]);
+  useEffectE(() => { loadEvents(devId); /* eslint-disable-next-line */ }, [devId, fuente]);
 
   const refrescar = async () => {
     if (!devId) return;
@@ -97,9 +121,10 @@ function EventosApp() {
   }, [eventos, nivel, filter]);
 
   const exportCsv = () => {
-    const head = ['fecha', 'fuente', 'evento', 'nivel'];
+    const head = ['fecha', 'fuente', 'evento', 'nivel', 'codigo', 'colectado'];
     const lines = [head.join(',')].concat(filtered.map(e =>
-      [_fmtTs(e.ts), e.fuente || '', '"' + (e.evento || '').replace(/"/g, '""') + '"', e.nivel || ''].join(',')
+      [_fmtTs(e.ts), e.fuente || '', '"' + (e.evento || '').replace(/"/g, '""') + '"',
+       e.nivel || '', e.code || '', _fmtTs(e.created_at)].join(',')
     ));
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
@@ -116,7 +141,7 @@ function EventosApp() {
 
       <main className="app-main">
         <div className="page-grid">
-          <section className="fleet-hero" style={{ gridTemplateColumns: '1.6fr repeat(4, 1fr)' }}>
+          <section className="fleet-hero" style={{ gridTemplateColumns: '1.6fr repeat(6, 1fr)' }}>
             <div className="fh-title">
               <h1>Log de eventos</h1>
               <div className="sub">
@@ -129,7 +154,9 @@ function EventosApp() {
             <div className="fh-stat"><label>Total</label><div className="v">{resumen.total || 0}</div></div>
             <div className="fh-stat" style={{ color: '#ff6b81' }}><label>Críticos</label><div className="v">{resumen.criticos || 0}</div></div>
             <div className="fh-stat" style={{ color: '#ffb000' }}><label>Warnings</label><div className="v">{resumen.warnings || 0}</div></div>
-            <div className="fh-stat"><label>Descargas</label><div className="v">{resumen.descargas || 0}</div></div>
+            <div className="fh-stat"><label>Descargas (UPS)</label><div className="v">{resumen.descargas || 0}</div></div>
+            <div className="fh-stat"><label>Descargas (portal)</label><div className="v">{resumen.descargas_portal || 0}</div></div>
+            <div className="fh-stat" style={{ color: '#ff6b81' }}><label>Desconexiones</label><div className="v">{resumen.desconexiones || 0}</div></div>
           </section>
 
           <div className="inv-toolbar">
@@ -142,6 +169,12 @@ function EventosApp() {
               <option value="critical">Críticos</option>
               <option value="warning">Warnings</option>
               <option value="info">Info</option>
+            </select>
+            <select value={fuente} onChange={e => setFuente(e.target.value)} className="grab-select"
+                    title="Portal: eventos generados por el monitoreo (conexión, descargas, alarmas). UPS: log nativo del equipo.">
+              <option value="">— Todas las fuentes —</option>
+              <option value="portal">Portal (conexión/alarmas)</option>
+              <option value="ups">UPS (log nativo)</option>
             </select>
             <button className="btn ghost" onClick={() => loadEvents(devId)} disabled={!devId || loading}>
               <i className="bi bi-arrow-clockwise ico"></i> RECARGAR
@@ -171,9 +204,24 @@ function EventosApp() {
                 )}
                 {!loading && filtered.map(e => (
                   <tr key={e.id}>
-                    <td className="mono dim">{_fmtTs(e.ts)}</td>
+                    <td className="mono dim">
+                      {_fmtTsSmart(e)}
+                      {_clockSkewed(e) && (
+                        <i className="bi bi-exclamation-triangle-fill"
+                           style={{ color: '#ffb000', marginLeft: 6, cursor: 'help' }}
+                           title={`Reloj del UPS desajustado — fecha registrada por el equipo. Colectado: ${_fmtTs(e.created_at)}`}></i>
+                      )}
+                    </td>
                     <td>{e.fuente || '—'}</td>
-                    <td><b>{e.evento}</b></td>
+                    <td>
+                      <b>{e.evento}</b>
+                      {e.code && (
+                        <span className="diag-pill" style={{
+                          marginLeft: 8, padding: '1px 6px', fontSize: 10, borderRadius: 4,
+                          background: '#101826', color: '#8fa3bd', border: '1px solid #2a3a5255',
+                        }}>{e.code}</span>
+                      )}
+                    </td>
                     <td><span className="diag-pill" style={_lvlStyle(e.nivel)}>{(e.nivel || 'info').toUpperCase()}</span></td>
                   </tr>
                 ))}

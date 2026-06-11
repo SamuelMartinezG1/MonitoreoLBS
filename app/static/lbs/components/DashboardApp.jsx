@@ -41,12 +41,13 @@ function FleetHero({ sites, devices, alarms }) {
   const availPct = total > 0 ? Math.round((online / total) * 100) : 0;
   const capPct   = totalKvaCap > 0 ? Math.round((totalKw / totalKvaCap) * 100) : 0;
 
-  // Autonomía mín: del UPS más estresado (carga alta, batería baja)
-  const candidates = devices.filter(d => d.status === 'ok' && d.bat > 0);
-  const worst = candidates.length
-    ? candidates.reduce((a, b) => ((a.bat || 100) < (b.bat || 100)) ? a : b)
+  // Autonomía mín: la REAL reportada por los UPS (no estimada). Si ningún
+  // equipo reporta autonomía (p.ej. en línea sin descarga) se muestra «—».
+  const withRuntime = devices.filter(d => d.status !== 'off' && (d.runtime_min || 0) > 0);
+  const worst = withRuntime.length
+    ? withRuntime.reduce((a, b) => (a.runtime_min < b.runtime_min) ? a : b)
     : null;
-  const minRuntime = worst ? `${Math.max(2, Math.round(worst.bat * 0.4))}m` : '—';
+  const minRuntime = worst ? `${Math.round(worst.runtime_min)}m` : '—';
 
   // Regiones únicas (a partir de las subredes lan)
   const regions = new Set(sites.map(s => s.region).filter(r => r && r !== '—'));
@@ -78,8 +79,11 @@ function FleetHero({ sites, devices, alarms }) {
       </div>
       <div className="fh-stat">
         <label>Carga total</label>
-        <div className="v"><AnimatedNumber value={totalKw} decimals={1}/><small>kW</small></div>
-        <div className="delta">{totalKvaCap > 0 ? <>{capPct}% de {totalKvaCap.toFixed(0)} kVA</> : <>sin capacidad cargada</>}</div>
+        {/* Sin kVA nominal capturado no se puede estimar kW: «—» en vez de un 0 falso */}
+        <div className="v">{totalKvaCap > 0
+          ? <><AnimatedNumber value={totalKw} decimals={1}/><small>kW</small></>
+          : <>—</>}</div>
+        <div className="delta">{totalKvaCap > 0 ? <>{capPct}% de {totalKvaCap.toFixed(0)} kVA</> : <>sin capacidad nominal cargada</>}</div>
       </div>
       <div className="fh-stat">
         <label>Sitios activos</label>
@@ -158,13 +162,24 @@ function TopLoadList({ devices }) {
     <div className="top-list">
       {sorted.map((d,i) => {
         const cls = d.load > 90 ? 'err' : d.load > 75 ? 'warn' : '';
+        const alarma = (d.alarmas_activas || [])[0];
+        const monUrl = ((window.LBS_URLS && window.LBS_URLS.monitoreo) || "monitoreo.html")
+                     + '?dev=' + (d._raw_id || d.id);
         return (
           <div key={d.id} className="top-row">
             <span className="rank">#{i+1}</span>
-            <span className="name">{d.name}<small>{d.model} · {d.ip}</small></span>
+            <span className="name">
+              {d.name}
+              {alarma && (
+                <i className="bi bi-exclamation-triangle-fill"
+                   style={{ color: alarma.level === 'critical' ? 'var(--err)' : 'var(--warn)', marginLeft: 6 }}
+                   title={`${alarma.code}: ${alarma.msg || ''}`}></i>
+              )}
+              <small>{d.model} · {d.ip}{d.temp > 0 ? ` · ${d.temp.toFixed(0)}°C` : ''} · bat {d.bat}%</small>
+            </span>
             <span className={"v " + cls}>{d.load}<small>%</small></span>
             <span className="bar"><i className={cls} style={{ width: d.load + '%' }}></i></span>
-            <a href={(window.LBS_URLS && window.LBS_URLS.monitoreo) || "monitoreo.html"}><i className="bi bi-graph-up"></i> ABRIR</a>
+            <a href={monUrl}><i className="bi bi-graph-up"></i> ABRIR</a>
           </div>
         );
       })}

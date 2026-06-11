@@ -26,7 +26,11 @@ import asyncio
 import logging
 
 from app.base_datos import GestorDB
+from app.services import capabilities
+from app.services import poll_errors
+from app.services.connection_tracker import tracker
 from app.services.modbus_monitor import ModbusMonitor
+from app.services.poll_errors import PollFailure
 from app.extensions import socketio
 
 logger = logging.getLogger(__name__)
@@ -72,6 +76,9 @@ class MonitoringService(threading.Thread):
 
         self.ultimo_estado: dict[str, dict] = {}
 
+        # Capability set por dispositivo (persiste a BD solo si cambia)
+        self._caps = capabilities.CapsCache(self.db)
+
         # Cache de clientes SNMP: dev_id -> (client, params_hash, created_ts)
         self._snmp_cache: dict[int, tuple] = {}
         self._snmp_ttl = int(os.environ.get('SNMP_CLIENT_TTL_S', 300))
@@ -113,6 +120,20 @@ class MonitoringService(threading.Thread):
             self.modbus_monitor.stop()
         except Exception:
             pass
+
+    # ------------------------------------------------------------------ #
+    # Acceso para rutas Flask (app.monitor)                               #
+    # ------------------------------------------------------------------ #
+    def get_runtime_data(self, dev_id) -> dict | None:
+        """Última lectura en memoria del dispositivo (SNMP o Modbus)."""
+        d = self.ultimo_estado.get(str(dev_id))
+        if d:
+            return d
+        return self.modbus_monitor.get_runtime_data(dev_id)
+
+    def get_capabilities(self, dev_id) -> dict | None:
+        """Último capability set en memoria (SNMP o Modbus)."""
+        return self._caps.get(dev_id) or self.modbus_monitor.get_capabilities(dev_id)
 
     # ------------------------------------------------------------------ #
     # Loop async                                                          #
@@ -218,11 +239,13 @@ class MonitoringService(threading.Thread):
 
         ups_type = dev.get('ups_type') or 'invt_enterprise'
         dev_id = dev['id']
+        name = dev.get('nombre', 'UPS')
 
         data = None
-        status = 'offline'
+        poll_ok = False
         alarms: list = []
         mapped_data: dict = {}
+        conn_state: dict = {}
 
         try:
             # 1. Perfil OID custom: bypass de los clientes estándar
@@ -237,10 +260,10 @@ class MonitoringService(threading.Thread):
                 data = await client.get_ups_data(ip)
 
             if data:
-                status = 'online'
+                poll_ok = True
                 data['device_id'] = dev_id
                 data['ip'] = ip
-                data['nombre'] = dev.get('nombre', 'UPS')
+                data['nombre'] = name
                 data['estado'] = 'ONLINE'
 
                 version_name = 'SNMPv1' if snmp_version == 0 else 'SNMPv2c'
@@ -251,28 +274,53 @@ class MonitoringService(threading.Thread):
                 mapped_data = _map_data_to_frontend(data, ups_type)
                 self.ultimo_estado[str(dev_id)] = mapped_data
                 alarms = _check_snmp_alarms(mapped_data)
-            else:
-                # Limpiar estado cacheado para no servir datos viejos al frontend
-                self.ultimo_estado.pop(str(dev_id), None)
 
+                conn_state = tracker.report_success(dev_id, name)
+                tracker.report_power_state(
+                    dev_id, name, mapped_data.get('power_mode') == 'Battery')
+                tracker.report_alarms(dev_id, name, alarms)
+                self._caps.update(dev_id, capabilities.from_snmp(data, ups_type))
+            else:
+                conn_state = tracker.report_failure(
+                    dev_id, name, poll_errors.NO_DATA, 'lectura vacía')
+
+        except PollFailure as pf:
+            logger.error("Error checando %s (%s): %s — %s",
+                         ip, dev_id, pf.code, pf.detail)
+            conn_state = tracker.report_failure(dev_id, name, pf.code, pf.detail)
         except Exception as e:
             logger.error("Error checando %s (%s): %s", ip, dev_id, e)
+            code, detail = poll_errors.classify_exception(e)
+            conn_state = tracker.report_failure(dev_id, name, code, detail)
+
+        # Estado CONFIRMADO por el tracker (con histéresis): un blip del
+        # enlace SIM no tumba el dispositivo; queda online + 'degraded'.
+        status = conn_state.get('status', 'offline')
+        if status == 'offline':
+            # Offline confirmado: dejar de servir datos viejos al frontend
             self.ultimo_estado.pop(str(dev_id), None)
+            mapped_data = {}
+        elif not poll_ok:
+            # Falla aún sin confirmar: servir la última lectura buena
+            mapped_data = self.ultimo_estado.get(str(dev_id), {})
 
         # Emit update siempre (online u offline)
         socketio.emit('ups_update', {
             'id':       dev_id,
             'status':   status,
             'ip':       ip,
-            'nombre':   dev.get('nombre', 'UPS'),
+            'nombre':   name,
             'protocol': 'snmp',
             'data':     mapped_data,
             'alarms':   alarms,
+            'connection':       conn_state,
+            'capabilities':     self._caps.get(dev_id),
+            'descargas_portal': tracker.get_discharge_count(dev_id),
         })
 
         # Persistencia con throttle por timestamp
         now = time.monotonic()
-        if status == 'online':
+        if poll_ok:
             # Telemetría + ups_metrics (cada METRICS_SAMPLE_INTERVAL_S)
             last_m = self._last_metric_write.get(dev_id, 0.0)
             if now - last_m >= self._metrics_interval:
@@ -301,8 +349,9 @@ class MonitoringService(threading.Thread):
                     self.db.guardar_punto_historial(dev_id, data)
                 except Exception as e:
                     logger.warning("Persist historial %s: %s", ip, e)
-        else:
-            # Offline: marca status=0 en métricas cada N seg para historial de disponibilidad
+        elif status == 'offline':
+            # Offline CONFIRMADO: marca status=0 en métricas cada N seg para
+            # historial de disponibilidad. (Un blip degradado no llega aquí.)
             last_m = self._last_metric_write.get(dev_id, 0.0)
             if now - last_m >= self._metrics_interval:
                 self._last_metric_write[dev_id] = now
@@ -345,6 +394,7 @@ class MonitoringService(threading.Thread):
             context = ContextData()
 
             data: dict = {}
+            last_err = None
             for mapping in oid_profile:
                 try:
                     errInd, errStat, _, varBinds = await get_cmd(
@@ -352,6 +402,7 @@ class MonitoringService(threading.Thread):
                         ObjectType(ObjectIdentity(mapping['oid'])),
                     )
                     if errInd or errStat or not varBinds:
+                        last_err = errInd or errStat
                         continue
                     raw = varBinds[0][1].prettyPrint()
                     factor = float(mapping.get('factor', 1.0))
@@ -360,6 +411,7 @@ class MonitoringService(threading.Thread):
                     except (ValueError, TypeError):
                         data[mapping['variable_name']] = raw
                 except Exception as e:
+                    last_err = e
                     logger.debug("Custom OID %s: %s", mapping.get('oid'), e)
 
             VAR_TO_STD = {
@@ -384,10 +436,26 @@ class MonitoringService(threading.Thread):
                 if std:
                     standardized[std] = val
                 standardized[name] = val
-            return standardized or None
+            if standardized:
+                return standardized
+
+            # Todos los OIDs del perfil fallaron: clasificar la causa
+            from app.services.protocols.snmp_upsmib_client import (
+                classify_error_indication,
+            )
+            if isinstance(last_err, Exception):
+                code, detail = poll_errors.classify_exception(last_err)
+            elif last_err is not None:
+                code, detail = classify_error_indication(last_err), str(last_err)
+            else:
+                code, detail = poll_errors.NO_DATA, 'perfil OID sin valores'
+            raise PollFailure(code, detail)
+        except PollFailure:
+            raise
         except Exception as e:
             logger.error("Custom profile poll %s: %s", ip, e)
-            return None
+            code, detail = poll_errors.classify_exception(e)
+            raise PollFailure(code, detail) from e
 
 
 # ============================================================================
@@ -457,7 +525,8 @@ def _map_data_to_frontend(data, ups_type):
         'voltaje_out_l2': data.get('output_voltage_l2'),
         'voltaje_out_l3': data.get('output_voltage_l3'),
         'frecuencia_out': data.get('output_frequency'),
-        # Corrientes salida
+        # Corrientes
+        'corriente_in_l1':  data.get('input_current'),
         'corriente_out_l1': data.get('output_current_l1', data.get('output_current')),
         'corriente_out_l2': data.get('output_current_l2'),
         'corriente_out_l3': data.get('output_current_l3'),

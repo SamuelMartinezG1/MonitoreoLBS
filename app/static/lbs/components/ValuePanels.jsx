@@ -254,7 +254,14 @@ function MiniBlock({ title, ico, accent, children, badge }) {
   );
 }
 
-function InputStackPanel({ values, phaseMode }) {
+// Helper de capacidades: sin `caps` (aún no detectadas) se muestra todo,
+// con `caps` solo se renderizan las filas que el UPS realmente soporta.
+function _capHas(caps, field) {
+  return !caps || (caps.fields || []).includes(field);
+}
+
+function InputStackPanel({ values, phaseMode, caps }) {
+  const has = (f) => _capHas(caps, f);
   return (
     <section className="eng-panel stack-panel">
       <div className="eng-head">
@@ -272,32 +279,40 @@ function InputStackPanel({ values, phaseMode }) {
           ) : (
             <MiniRow label="Tensión" value={values.v_in} unit="V" />
           )}
-          <MiniRow label="Corriente" value={values.i_in}   unit="A" />
-          <MiniRow label="Frecuencia" value={values.freq_in} unit="Hz" />
-          <MiniRow label="THD entrada" value={values.thd_in} unit="%" />
+          {has('i_in') && <MiniRow label="Corriente" value={values.i_in} unit="A" />}
+          {has('freq_in') && <MiniRow label="Frecuencia" value={values.freq_in} unit="Hz" />}
+          {has('thd_in') && <MiniRow label="THD entrada" value={values.thd_in} unit="%" />}
         </MiniBlock>
 
-        <MiniBlock title="Rectificador" ico="cpu" accent="acc-cyan" badge={values.eff_rect === '—' ? '—' : values.eff_rect + '%'}>
-          <MiniRow label="DC bus" value={values.dc_v_rect} unit="V DC" />
-          <MiniRow label="DC corriente" value={values.dc_i} unit="A" />
-          <MiniRow label="Eficiencia" value={values.eff_rect} unit="%" tone="ok" />
-        </MiniBlock>
+        {/* Ningún UPS de la flota expone telemetría del rectificador: el
+            bloque solo aparece si las capacidades lo declaran */}
+        {has('dc_v_rect') && (
+          <MiniBlock title="Rectificador" ico="cpu" accent="acc-cyan" badge={values.eff_rect === '—' ? '—' : values.eff_rect + '%'}>
+            <MiniRow label="DC bus" value={values.dc_v_rect} unit="V DC" />
+            <MiniRow label="DC corriente" value={values.dc_i} unit="A" />
+            <MiniRow label="Eficiencia" value={values.eff_rect} unit="%" tone="ok" />
+          </MiniBlock>
+        )}
 
         <MiniBlock title="Batería" ico="battery-charging" accent={values.bat_pct < 20 ? 'acc-red' : values.bat_pct < 50 ? 'acc-orange' : 'acc-green'} badge={values.bat_pct + '%'}>
           <div className="batt-bar">
             <div className={"batt-bar-fill " + (values.bat_pct < 20 ? 'err' : values.bat_pct < 50 ? 'warn' : 'ok')} style={{ width: values.bat_pct + '%' }}></div>
           </div>
-          <MiniRow label="Tensión bus" value={values.bat_v}    unit="V DC" />
-          <MiniRow label="Corriente"   value={values.bat_i}    unit="A" />
-          <MiniRow label="Temperatura" value={values.bat_temp} unit="°C" />
-          <MiniRow label="Autonomía"   value={values.runtime}  unit="" tone="ok" />
+          {has('bat_v') && <MiniRow label="Tensión bus" value={values.bat_v} unit="V DC" />}
+          {has('bat_i') && <MiniRow label="Corriente" value={values.bat_i} unit="A" />}
+          {has('bat_temp') && <MiniRow label="Temperatura" value={values.bat_temp} unit="°C" />}
+          {has('runtime') && <MiniRow label="Autonomía" value={values.runtime} unit="" tone="ok" />}
         </MiniBlock>
       </div>
     </section>
   );
 }
 
-function OutputStackPanel({ values, phaseMode, alarms }) {
+function OutputStackPanel({ values, phaseMode, alarms, caps }) {
+  const has = (f) => _capHas(caps, f);
+  const showAmbient = !caps || caps.has_ambient;
+  const showHumidity = !!(caps && caps.has_humidity);
+  const showBypass = !!(caps && caps.has_bypass);
   return (
     <section className="eng-panel stack-panel">
       <div className="eng-head">
@@ -318,25 +333,27 @@ function OutputStackPanel({ values, phaseMode, alarms }) {
           ) : (
             <MiniRow label="Tensión" value={values.v_out} unit="V" />
           )}
-          <MiniRow label="Frecuencia"  value={values.freq_out} unit="Hz" />
-          <MiniRow label="THD salida"  value={values.thd_out}  unit="%" tone="ok" />
-          <MiniRow label="Eficiencia"  value={values.eff_inv}  unit="%" tone="ok" />
+          {has('freq_out') && <MiniRow label="Frecuencia" value={values.freq_out} unit="Hz" />}
+          {has('thd_out') && <MiniRow label="THD salida" value={values.thd_out} unit="%" tone="ok" />}
+          {has('eff_inv') && <MiniRow label="Eficiencia" value={values.eff_inv} unit="%" tone="ok" />}
+          {showBypass && <MiniRow label="Bypass" value={values.bypass_v} unit="V" />}
         </MiniBlock>
 
         <MiniBlock title="Carga" ico="speedometer2" accent={values.load_pct > 90 ? 'acc-red' : values.load_pct > 70 ? 'acc-orange' : 'acc-green'} badge={values.load_pct + '%'}>
           <div className="batt-bar">
             <div className={"batt-bar-fill " + (values.load_pct > 90 ? 'err' : values.load_pct > 70 ? 'warn' : 'ok')} style={{ width: values.load_pct + '%' }}></div>
           </div>
-          <MiniRow label="Pot. activa"   value={values.load_kw}  unit="kW" />
-          <MiniRow label="Pot. aparente" value={values.load_kva} unit="kVA" />
-          <MiniRow label="Corriente"     value={values.i_out}    unit="A" />
-          <MiniRow label="Factor pot."   value={values.pf}       unit="" tone="ok" />
+          {has('active_power') && <MiniRow label="Pot. activa" value={values.load_kw} unit="kW" />}
+          {has('apparent_power') && <MiniRow label="Pot. aparente" value={values.load_kva} unit="kVA" />}
+          {has('i_out') && <MiniRow label="Corriente" value={values.i_out} unit="A" />}
+          {has('pf') && <MiniRow label="Factor pot." value={values.pf} unit="" tone="ok" />}
         </MiniBlock>
 
         <MiniBlock title="Ambiente y batería" ico="thermometer-half" accent="acc-cyan">
-          <MiniRow label="Temp. ambiente"  value={values.amb_temp}   unit="°C" />
-          <MiniRow label="Total descargas" value={values.discharges} unit="ciclos" />
-          <MiniRow label="Temp. batería"   value={values.bat_temp}   unit="°C" />
+          {showAmbient && <MiniRow label="Temp. ambiente" value={values.amb_temp} unit="°C" />}
+          {showHumidity && <MiniRow label="Humedad" value={values.amb_humidity} unit="% RH" />}
+          <MiniRow label={values.discharges_label || 'Total descargas'} value={values.discharges} unit="" />
+          {has('bat_temp') && <MiniRow label="Temp. batería" value={values.bat_temp} unit="°C" />}
         </MiniBlock>
       </div>
     </section>
@@ -379,7 +396,8 @@ function UpsEventsPanel({ deviceId, deviceName }) {
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {resumen.total != null && (
             <span className="live-badge" style={{ color: 'var(--text-dim)' }}>
-              {resumen.total} ev · {resumen.descargas || 0} descargas
+              {resumen.total} ev · {(resumen.descargas_portal || resumen.descargas || 0)} descargas
+              {resumen.desconexiones > 0 && <> · {resumen.desconexiones} desconexiones</>}
             </span>
           )}
           <a className="btn ghost" href="/eventos" style={{ padding: '4px 10px' }} title="Abrir el log completo con filtros y colección manual">

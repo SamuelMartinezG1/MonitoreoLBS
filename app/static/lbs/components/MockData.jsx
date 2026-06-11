@@ -69,6 +69,7 @@
 
     // ── Telemetría / historial / analytics ─────────────────────────────
     getUltimoEstado:   (id)              => _json('GET', `/api/monitoreo/ultimo-estado/${id}`),
+    getEstadoFlota:    ()                => _json('GET', '/api/monitoreo/estado-flota'),
     getTelemetria:     (id, mins = 10)   => _json('GET', `/api/telemetry/recent/${id}?minutes=${mins}`),
     getHistorial:      (id, horas = 6)   => _json('GET', `/api/ups-history/${id}?horas=${horas}`),
     getCalidadEnergia: (id, horas = 24)  => _json('GET', `/api/monitoreo/calidad-energia/${id}?horas=${horas}`),
@@ -135,8 +136,17 @@
   // ──────────────────────────────────────────────────────────────────────
   function _statusFromDevice(d) {
     if (!d.activo) return 'off';
+    // Estado de conexión CONFIRMADO por el backend (tracker con histéresis).
+    const f = d._flota;
+    if (f && f.connection) {
+      const conn = f.connection;
+      if (conn.status === 'offline' || conn.status === 'unknown') return 'off';
+      if ((f.alarmas_activas || []).length) return 'warn';
+      if (conn.link_quality === 'degraded') return 'warn';
+      return 'ok';
+    }
+    // Fallback heurístico (estado-flota no disponible)
     const last = d._last || {};
-    if (last.estado === 'offline' || last.status_code === 0) return 'off';
     const carga = last.carga_pct;
     const bat = last.bateria_pct;
     if ((bat !== undefined && bat > 0 && bat < 50) || (carga !== undefined && carga > 85)) return 'warn';
@@ -170,6 +180,12 @@
       temp:    Number(last.temperatura || 0),
       status:  _statusFromDevice(d),
       uptime:  d.updated_at ? '—' : '—',
+      connection:       (d._flota || {}).connection || null,
+      alarmas_activas:  (d._flota || {}).alarmas_activas || [],
+      descargas_portal: (d._flota || {}).descargas_portal,
+      capabilities:     (d._flota || {}).capabilities || null,
+      power_mode:       (d._flota || {}).power_mode,
+      runtime_min:      Number((d._flota || {}).battery_remain_time) || 0,
       protocolo: d.protocolo,
       ups_type:  d.ups_type,
       fases:     d.fases,
@@ -186,7 +202,7 @@
   function _mapSite(s, devices) {
     const slug = _slugify(s.nombre);
     const inSite = devices.filter(d => d.sitio_id === s.id);
-    const online = inSite.filter(d => d._last && d._last.estado !== 'offline').length;
+    const online = inSite.filter(d => _statusFromDevice(d) !== 'off').length;
     const alarms = inSite.filter(d => _statusFromDevice(d) === 'warn').length;
     const totalLoad = inSite.reduce((a, d) => a + Number((d._last || {}).carga_pct || 0), 0);
     const totalKva = inSite.reduce((a, d) => a + Number(d.kva || 0), 0);
@@ -215,35 +231,40 @@
   }
 
   function _deriveAlarms(devices) {
+    // Alarmas REALES del backend: desconexión con causa + alarmas de umbral
+    // confirmadas por el tracker (antes se inventaban en cliente).
     const out = [];
     devices.forEach(d => {
-      const last = d._last || {};
-      const s = _statusFromDevice(d);
-      if (s === 'off') {
+      const f = d._flota || {};
+      const conn = f.connection || {};
+      const site = _slugify(d.sitio_nombre || '');
+      if (conn.status === 'offline') {
+        out.push({
+          ts: conn.offline_since
+            ? new Date(conn.offline_since).toLocaleString('es-MX', { hour12: false })
+            : new Date().toLocaleTimeString('es-MX', { hour12: false }),
+          lvl: 'err',
+          dev: d.nombre, site,
+          title: 'UPS sin conexión',
+          detail: conn.offline_reason_label || 'Sin respuesta del protocolo',
+        });
+      } else if (conn.link_quality === 'degraded') {
         out.push({
           ts: new Date().toLocaleTimeString('es-MX', { hour12: false }),
-          lvl: 'err',
-          dev: d.nombre, site: _slugify(d.sitio_nombre || ''),
-          title: 'Equipo offline', detail: 'Sin respuesta del protocolo',
+          lvl: 'warn',
+          dev: d.nombre, site,
+          title: 'Enlace inestable',
+          detail: conn.offline_reason_label || 'Fallas intermitentes de lectura',
         });
-      } else if (s === 'warn') {
-        if (last.bateria_pct && last.bateria_pct < 50) {
-          out.push({
-            ts: new Date().toLocaleTimeString('es-MX', { hour12: false }),
-            lvl: 'warn',
-            dev: d.nombre, site: _slugify(d.sitio_nombre || ''),
-            title: 'Batería baja', detail: `Nivel ${last.bateria_pct.toFixed(1)}%`,
-          });
-        }
-        if (last.carga_pct && last.carga_pct > 85) {
-          out.push({
-            ts: new Date().toLocaleTimeString('es-MX', { hour12: false }),
-            lvl: 'warn',
-            dev: d.nombre, site: _slugify(d.sitio_nombre || ''),
-            title: 'Carga alta', detail: `${last.carga_pct.toFixed(1)}%`,
-          });
-        }
       }
+      (f.alarmas_activas || []).forEach(a => {
+        out.push({
+          ts: new Date().toLocaleTimeString('es-MX', { hour12: false }),
+          lvl: a.level === 'critical' ? 'err' : 'warn',
+          dev: d.nombre, site,
+          title: a.code, detail: a.msg || '',
+        });
+      });
     });
     return out.slice(0, 50);
   }
@@ -253,8 +274,11 @@
   // ──────────────────────────────────────────────────────────────────────
   async function refresh() {
     try {
-      // 1. topología (sitios + dispositivos asignados + sin asignar)
-      const topo = await window.LBS_API.getTopologia();
+      // 1. topología (sitios) + estado de flota (1 llamada para todos los UPS)
+      const [topo, flota] = await Promise.all([
+        window.LBS_API.getTopologia(),
+        window.LBS_API.getEstadoFlota().catch(() => null),
+      ]);
       const sitios = topo.sitios || [];
       const sinAsignar = topo.sin_asignar || [];
       const devicesRaw = [
@@ -262,17 +286,30 @@
         ...sinAsignar.map(d => ({ ...d, sitio_id: null, sitio_nombre: null })),
       ];
 
-      // 2. último estado por dispositivo (parallel)
-      const enrichments = await Promise.all(devicesRaw.map(async d => {
-        try {
-          const r = await window.LBS_API.getUltimoEstado(d.id);
-          return { id: d.id, last: r && r.data ? r.data : null };
-        } catch (_) {
-          return { id: d.id, last: null };
-        }
-      }));
-      const lastById = Object.fromEntries(enrichments.map(e => [e.id, e.last]));
-      devicesRaw.forEach(d => { d._last = lastById[d.id]; });
+      // 2. estado por dispositivo desde estado-flota (conexión confirmada,
+      //    alarmas activas, capacidades). Fallback: fan-out a ultimo-estado.
+      if (flota && Array.isArray(flota.devices)) {
+        const flotaById = Object.fromEntries(flota.devices.map(f => [f.id, f]));
+        devicesRaw.forEach(d => {
+          d._flota = flotaById[d.id] || null;
+          d._last = d._flota;
+        });
+      } else {
+        const enrichments = await Promise.all(devicesRaw.map(async d => {
+          try {
+            const r = await window.LBS_API.getUltimoEstado(d.id);
+            return { id: d.id, last: r && r.data ? r.data : null, conn: r && r.connection };
+          } catch (_) {
+            return { id: d.id, last: null, conn: null };
+          }
+        }));
+        const byId = Object.fromEntries(enrichments.map(e => [e.id, e]));
+        devicesRaw.forEach(d => {
+          const e = byId[d.id] || {};
+          d._last = e.last;
+          d._flota = e.conn ? { connection: e.conn } : null;
+        });
+      }
 
       // 3. construir MOCK con shape esperado
       const SITES   = sitios.map(s => _mapSite(s, devicesRaw));
@@ -312,9 +349,13 @@
       if (prev === undefined) return;
       if (prev === cur)       return;
 
-      const name = payload.nombre || `UPS ${id}`;
+      const name = payload.nombre || payload.name || `UPS ${id}`;
       if (cur === 'offline' || cur === 'off') {
-        window.LBS_TOAST.error(`${name} se desconectó`, { ttl: 9000 });
+        // Con histéresis en el backend, esto solo dispara en offline CONFIRMADO
+        const conn = payload.connection || {};
+        const reason = conn.offline_reason_label;
+        window.LBS_TOAST.error(
+          `${name} se desconectó${reason ? ' — ' + reason : ''}`, { ttl: 9000 });
       } else if (prev === 'offline' || prev === 'off') {
         window.LBS_TOAST.success(`${name} de vuelta en línea`);
       }
