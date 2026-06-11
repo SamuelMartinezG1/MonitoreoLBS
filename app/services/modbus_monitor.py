@@ -166,20 +166,36 @@ _METRIC_KEYS = (
 )
 
 
+def _voltage_band(v):
+    """Banda (low, high) de alarma según el sistema (120/127 V vs 220/230 V).
+
+    Inferida de la propia lectura. Evita el falso "voltaje bajo" en equipos de
+    120 V (el umbral fijo de 180/200 V solo aplica a sistemas de 220+ V).
+    Devuelve None sin lectura (0) para no alarmar sin dato.
+    """
+    if not v or v <= 0:
+        return None
+    if v < 160:               # sistema 120/127 V
+        return (95.0, 145.0)
+    return (190.0, 265.0)      # sistema 220/230/240 V
+
+
 def _check_alarms(data, status):
     alarms = []
     t = ALARM_THRESHOLDS
 
     vin = data.get('input_voltage_a', 0)
-    if 0 < vin < t['input_voltage_low']:
+    band = _voltage_band(vin)
+    if band and vin < band[0]:
         alarms.append({'level': 'critical', 'code': 'INPUT_V_LOW', 'msg': f'Voltaje entrada bajo: {vin:.1f}V'})
-    elif vin > t['input_voltage_high']:
+    elif band and vin > band[1]:
         alarms.append({'level': 'warning', 'code': 'INPUT_V_HIGH', 'msg': f'Voltaje entrada alto: {vin:.1f}V'})
 
     vout = data.get('output_voltage_a', 0)
-    if 0 < vout < t['output_voltage_low']:
+    oband = _voltage_band(vout)
+    if oband and vout < oband[0]:
         alarms.append({'level': 'critical', 'code': 'OUTPUT_V_LOW', 'msg': f'Voltaje salida bajo: {vout:.1f}V'})
-    elif vout > t['output_voltage_high']:
+    elif oband and vout > oband[1]:
         alarms.append({'level': 'warning', 'code': 'OUTPUT_V_HIGH', 'msg': f'Voltaje salida alto: {vout:.1f}V'})
 
     bat_cap = data.get('battery_capacity', 0)
@@ -207,8 +223,8 @@ def _check_alarms(data, status):
             alarms.append({'level': 'critical', 'code': 'BAT_FAIL', 'msg': 'Falla en bateria'})
         if ps_mode == 2:
             alarms.append({'level': 'warning', 'code': 'ON_BYPASS', 'msg': 'Carga alimentada por bypass'})
-        elif ps_mode == 0:
-            alarms.append({'level': 'info', 'code': 'NO_LOAD', 'msg': 'Sistema sin carga'})
+        # ps_mode == 0 ("sin carga") NO es una alarma: el % de carga ya lo
+        # muestra. Antes inflaba el contador de alarmas con ruido informativo.
 
     env_temp = data.get('env_temperature', 0)
     if env_temp > t['temp_env_high']:
@@ -358,6 +374,10 @@ class ModbusMonitor:
                     'active_power':     estado.get('active_power', 0),
                     'apparent_power':   estado.get('apparent_power', 0),
                     'battery_runtime':  estado.get('battery_remain_time', 0),
+                    # Sin esto, power_mode quedaba NULL en el historial Modbus.
+                    'power_source':     estado.get('power_mode', ''),
+                    # Solo si hay sensor THS real (0/ausente -> NULL -> N/D, no 0.0).
+                    'ambient_temperature': (estado.get('env_temperature') or None),
                 }
                 self.db.guardar_punto_historial(dev_id, raw)
             except Exception as e:

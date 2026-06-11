@@ -485,12 +485,30 @@ def _map_data_to_frontend(data, ups_type):
     }
 
 
+def _voltage_band(v):
+    """Banda (low, high) de alarma según el sistema inferido de la lectura.
+
+    Los equipos pueden ser 120/127 V (Norteamérica/México) o 220/230/240 V.
+    Un umbral fijo de 180 V marcaba "voltaje bajo" falso en todo UPS de 120 V.
+    Devolvemos None si no hay lectura (0) para no alarmar sin dato.
+    """
+    if not v or v <= 0:
+        return None
+    if v < 160:               # sistema 120/127 V
+        return (95.0, 145.0)
+    return (190.0, 265.0)      # sistema 220/230/240 V
+
+
 def _check_snmp_alarms(data):
     alarms = []
     vin = data.get('voltaje_in_l1', 0) or 0
-    if 0 < vin < 180:
+    band = _voltage_band(vin)
+    if band and vin < band[0]:
         alarms.append({'level': 'critical', 'code': 'INPUT_V_LOW',
                        'msg': f'Voltaje entrada bajo: {vin:.1f}V'})
+    elif band and vin > band[1]:
+        alarms.append({'level': 'warning', 'code': 'INPUT_V_HIGH',
+                       'msg': f'Voltaje entrada alto: {vin:.1f}V'})
     bat = data.get('bateria_pct', 0) or 0
     if 0 < bat < 20:
         alarms.append({'level': 'critical', 'code': 'BAT_CRITICAL',

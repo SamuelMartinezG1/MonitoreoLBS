@@ -219,10 +219,11 @@ class UPSMIBClient:
             'output_power': safe_int(raw.get('output_power')),
             'output_load': safe_int(raw.get('output_percent_load')),
             
-            # Factor de potencia y potencias (estimados si no disponibles)
-            'power_factor': 0.8,  # Estimado
+            # Factor de potencia: el UPS-MIB RFC 1628 no lo expone. NO lo
+            # inventamos (antes se ponía 0.8 fijo, un dato falso). None => "—".
+            'power_factor': None,
             'active_power': safe_int(raw.get('output_power')),
-            'apparent_power': int(safe_int(raw.get('output_power')) / 0.8) if raw.get('output_power') else 0,
+            'apparent_power': safe_int(raw.get('output_power')) or None,
             
             # Estado general
             'temperature': safe_int(raw.get('battery_temperature')),

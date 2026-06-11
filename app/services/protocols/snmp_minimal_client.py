@@ -151,12 +151,15 @@ class MinimalSNMPClient:
             
             # Batería
             'battery_voltage': battery_voltage,
+            # 'battery_capacity' es el nombre que espera el mapeador del frontend
+            # (antes solo se emitía 'bateria_pct' y el % de batería se perdía).
+            'battery_capacity': batt_capacity,
             'bateria_pct': batt_capacity,
             'carga_pct': load_pct,
             'output_load': load_pct,
-            
-            # Estimados
-            'power_factor': 0.9, 
+
+            # Factor de potencia: NO se mide aquí; no lo inventamos (antes 0.9).
+            'power_factor': None,
             'current_out_l1': 0, # Se podría calcular con Load + Potencia Nominal si se supiera
             
             'power_source': 'Battery' if input_voltage < 50 else 'Normal',

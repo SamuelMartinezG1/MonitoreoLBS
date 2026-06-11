@@ -1,0 +1,9 @@
+# Override para MonitoreoLBS — conecta a la BD unificada.
+# IMPORTANTE: 'portal' usa network_mode: host (necesario para SNMP/Modbus),
+# por eso NO se une a la red Docker: conecta por el puerto publicado del host.
+# Uso: docker compose -f docker-compose.yml -f .../monitoreo.override.yml up -d portal
+services:
+  portal:
+    depends_on: []
+    environment:
+      DATABASE_URL: ${UNIFIED_DATABASE_URL:?define UNIFIED_DATABASE_URL en MonitoreoLBS/.env}
