@@ -362,6 +362,14 @@ class ModbusMonitor:
                 devices = self.db.obtener_monitoreo_ups()
                 modbus_devices = [d for d in devices if d.get('protocolo') == 'modbus']
 
+                # Purga de dispositivos eliminados/desactivados: sin esto el
+                # cache seguía escribiendo historial de un device borrado
+                # (violación de FK en ups_chart_history cada 30 s).
+                vivos = {str(d['id']) for d in modbus_devices}
+                for dev_id_str in list(self._ultimo_estado.keys()):
+                    if dev_id_str not in vivos:
+                        self._ultimo_estado.pop(dev_id_str, None)
+
                 if modbus_devices and self._executor is not None:
                     futures = [
                         self._executor.submit(self._process_device, dev, metrics_buffer, buffer_lock)
