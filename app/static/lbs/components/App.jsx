@@ -98,6 +98,7 @@ function _liveValuesFrom(d, caps, descargasPortal) {
     amb_temp:   (ambT == null || isNaN(ambT)) ? ND : Number(ambT).toFixed(1),
     amb_humidity: (ambH == null || isNaN(ambH)) ? DASH : Number(ambH).toFixed(1),
     bypass_v: f(d.bypass_voltage_a, 1),
+    rect_status: d.rectifier_status || null,
     discharges, discharges_label,
     _hasData: true,
   };
@@ -117,6 +118,7 @@ function _emptyValues(descargasPortal) {
     bat_v: DASH, bat_i: DASH, bat_pct: DASH, bat_temp: DASH,
     load_pct: DASH, load_kw: DASH, load_kva: DASH, runtime: DASH,
     temp: DASH, amb_temp: ND, amb_humidity: DASH, bypass_v: DASH,
+    rect_status: null,
     discharges: descargasPortal != null ? String(descargasPortal) : ND,
     discharges_label: descargasPortal != null ? 'Descargas (portal)' : 'Total descargas',
     _hasData: false,
@@ -255,10 +257,13 @@ function App() {
     const load = () => {
       window.LBS_API.getHistorial(activeDevice.id, 6).then(rows => {
         if (cancelled || !Array.isArray(rows)) return;
+        // NULL se conserva (equipo sin conexión en ese punto): la gráfica
+        // deja un hueco en vez de dibujar un 0 falso.
+        const num = v => (v == null || isNaN(v)) ? null : +v;
         setSeries({
-          voltage: rows.map(r => ({ t: fmt(r.timestamp), v_in: +r.voltaje_in_l1||0, v_in_l2: +r.voltaje_in_l2||0, v_in_l3: +r.voltaje_in_l3||0, v_out: +r.voltaje_out_l1||0 })),
-          load:    rows.map(r => ({ t: fmt(r.timestamp), load_pct: +r.carga_pct||0, i_out: +r.corriente_out_l1||0 })),
-          battery: rows.map(r => ({ t: fmt(r.timestamp), bat_pct: +r.bateria_pct||0, temp: +r.temperatura||0 })),
+          voltage: rows.map(r => ({ t: fmt(r.timestamp), v_in: num(r.voltaje_in_l1), v_in_l2: num(r.voltaje_in_l2), v_in_l3: num(r.voltaje_in_l3), v_out: num(r.voltaje_out_l1) })),
+          load:    rows.map(r => ({ t: fmt(r.timestamp), load_pct: num(r.carga_pct), i_out: num(r.corriente_out_l1) })),
+          battery: rows.map(r => ({ t: fmt(r.timestamp), bat_pct: num(r.bateria_pct), temp: num(r.temperatura) })),
         });
       }).catch(() => {});
     };
@@ -420,12 +425,13 @@ function App() {
             mode={statusKind}
             phaseMode={phaseMode}
             showParticles={t.showParticles !== false && hasData}
+            caps={caps}
           />
           <OutputStackPanel values={values} phaseMode={phaseMode} alarms={alarms} caps={caps} />
         </div>
 
         <div className="panels-row" style={{ ['--stagger']: 2, gridTemplateColumns: '1.7fr 1fr' }}>
-          <HistoryChart series={series} phaseMode={phaseMode} />
+          <HistoryChart series={series} phaseMode={phaseMode} hours={6} />
           <LoadAnalysisPanel values={values} />
         </div>
 

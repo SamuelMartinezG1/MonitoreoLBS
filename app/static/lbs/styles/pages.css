@@ -63,8 +63,8 @@
 .fh-stat.err::before  { background: var(--err);  box-shadow: 0 0 10px var(--err-glow); }
 .fh-stat label {
   font-family: var(--font-mono);
-  font-size: 10px; letter-spacing: 0.20em;
-  color: var(--text-dim); text-transform: uppercase;
+  font-size: 11.5px; letter-spacing: 0.14em;
+  color: var(--text-sec); text-transform: uppercase;
 }
 .fh-stat .v {
   font-family: var(--font-mono);
@@ -73,13 +73,13 @@
   font-variant-numeric: tabular-nums;
   line-height: 1; text-shadow: 0 0 14px var(--accent-glow);
 }
-.fh-stat .v small { font-size: 11px; color: var(--text-dim); margin-left: 4px; font-weight: 500; text-shadow: none; }
+.fh-stat .v small { font-size: 12.5px; color: var(--text-dim); margin-left: 4px; font-weight: 500; text-shadow: none; }
 .fh-stat.ok .v   { color: var(--ok);   text-shadow: 0 0 16px var(--ok-glow); }
 .fh-stat.warn .v { color: var(--warn); text-shadow: 0 0 16px var(--warn-glow); }
 .fh-stat.err .v  { color: var(--err);  text-shadow: 0 0 16px var(--err-glow); }
 .fh-stat .delta {
-  font-family: var(--font-mono); font-size: 9.5px;
-  color: var(--text-dim); letter-spacing: 0.12em;
+  font-family: var(--font-mono); font-size: 11px;
+  color: var(--text-dim); letter-spacing: 0.10em;
 }
 .fh-stat .delta.up   { color: var(--ok); }
 .fh-stat .delta.down { color: var(--err); }
@@ -283,13 +283,13 @@
 .inv-table-wrap > * { position: relative; }
 .inv-table {
   width: 100%; border-collapse: collapse;
-  font-family: var(--font-mono); font-size: 12px;
+  font-family: var(--font-mono); font-size: 13.5px;
 }
 .inv-table thead th {
   text-align: left;
   padding: 12px 14px;
-  font-family: var(--font-mono); font-size: 10px;
-  letter-spacing: 0.18em; color: var(--cyan);
+  font-family: var(--font-mono); font-size: 11.5px;
+  letter-spacing: 0.14em; color: var(--cyan);
   text-transform: uppercase;
   border-bottom: 1px solid var(--border);
   background: rgba(0,180,255,0.04);
@@ -344,7 +344,7 @@
 .inv-table tbody td .pill-status.err  { background: rgba(255,58,92,0.10); border-color: rgba(255,58,92,0.40); color: var(--err); }
 .inv-table tbody td .pill-status.off  { background: rgba(140,200,255,0.05); border-color: var(--border); color: var(--text-dim); }
 .inv-table tbody td .dev-name { color: var(--text-main); font-weight: 700; letter-spacing: 0.02em; }
-.inv-table tbody td .dev-model { color: var(--text-dim); font-size: 10.5px; margin-top: 2px; }
+.inv-table tbody td .dev-model { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
 .inv-table tbody td .mini-bar {
   display: inline-block;
   width: 80px; height: 6px;
@@ -566,7 +566,7 @@
   border: 1px solid var(--border);
   border-left: 3px solid var(--cyan);
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: 13.5px;
   transition: all 200ms;
 }
 .feed-row:hover { background: rgba(0,180,255,0.06); }
@@ -577,7 +577,7 @@
 .feed-row.ok i   { color: var(--ok); }
 .feed-row.warn i { color: var(--warn); }
 .feed-row.err  i { color: var(--err); }
-.feed-row .ts { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); letter-spacing: 0.10em; }
+.feed-row .ts { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dim); letter-spacing: 0.08em; }
 .feed-row .msg b { color: var(--text-main); }
 .feed-row .msg span { color: var(--text-sec); }
 .feed-row .dev {
@@ -605,18 +605,18 @@
   color: var(--cyan); letter-spacing: 0.10em;
 }
 .top-row .name {
-  font-family: var(--font-disp); font-size: 13px; font-weight: 600;
+  font-family: var(--font-disp); font-size: 14.5px; font-weight: 600;
   color: var(--text-main); letter-spacing: 0.02em;
 }
 .top-row .name small {
-  display: block; font-family: var(--font-mono); font-size: 10px;
-  color: var(--text-dim); letter-spacing: 0.10em; font-weight: 400; margin-top: 2px;
+  display: block; font-family: var(--font-mono); font-size: 11.5px;
+  color: var(--text-dim); letter-spacing: 0.08em; font-weight: 400; margin-top: 2px;
 }
 .top-row .v {
-  font-family: var(--font-mono); font-size: 16px; font-weight: 700;
+  font-family: var(--font-mono); font-size: 18px; font-weight: 700;
   color: var(--text-main); font-variant-numeric: tabular-nums;
 }
-.top-row .v small { font-size: 10px; color: var(--text-dim); margin-left: 3px; font-weight: 500; }
+.top-row .v small { font-size: 11.5px; color: var(--text-dim); margin-left: 3px; font-weight: 500; }
 .top-row .v.warn { color: var(--warn); text-shadow: 0 0 8px var(--warn-glow); }
 .top-row .v.err  { color: var(--err);  text-shadow: 0 0 8px var(--err-glow); }
 .top-row .bar {

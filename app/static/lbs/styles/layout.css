@@ -68,51 +68,51 @@
 .mini-head {
   display: flex; justify-content: space-between; align-items: center;
   font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.18em;
+  font-size: 12px;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--text-sec);
-  padding-bottom: 6px;
+  padding-bottom: 7px;
   border-bottom: 1px dashed rgba(140,200,255,0.10);
-  margin-bottom: 6px;
+  margin-bottom: 7px;
 }
-.mini-head i { margin-right: 6px; color: var(--cyan); font-size: 12px; }
+.mini-head i { margin-right: 6px; color: var(--cyan); font-size: 14px; }
 .mini-head em {
   font-style: normal;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11.5px;
   color: var(--cyan);
   background: rgba(34,225,255,0.08);
   border: 1px solid rgba(34,225,255,0.22);
-  padding: 2px 7px;
+  padding: 2px 8px;
   border-radius: 999px;
   letter-spacing: 0.10em;
 }
-.mini-body { display: flex; flex-direction: column; gap: 3px; }
+.mini-body { display: flex; flex-direction: column; gap: 5px; }
 
 .mini-row {
   display: flex; justify-content: space-between; align-items: baseline;
   font-family: var(--font-mono);
-  padding: 3px 2px;
+  padding: 5px 4px;
   border-radius: 4px;
   transition: background 160ms;
 }
 .mini-row:hover { background: rgba(140,200,255,0.04); }
 .mini-row .mini-label {
-  font-size: 10.5px;
-  color: var(--text-dim);
-  letter-spacing: 0.10em;
+  font-size: 12.5px;
+  color: var(--text-sec);
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 .mini-row .mini-label i { margin-right: 6px; opacity: 0.7; }
 .mini-row .mini-val {
-  font-size: 13.5px;
+  font-size: 17px;
   font-weight: 700;
   color: var(--text-main);
   font-variant-numeric: tabular-nums;
   text-shadow: 0 0 10px rgba(140,200,255,0.18);
 }
-.mini-row .mini-val small { font-size: 10px; color: var(--text-dim); margin-left: 3px; font-weight: 500; letter-spacing: 0.10em; }
+.mini-row .mini-val small { font-size: 12px; color: var(--text-dim); margin-left: 4px; font-weight: 500; letter-spacing: 0.10em; }
 .mini-row.l1 .mini-val { color: var(--l1); text-shadow: 0 0 10px rgba(255,58,92,0.30); }
 .mini-row.l2 .mini-val { color: var(--l2); text-shadow: 0 0 10px rgba(255,176,0,0.30); }
 .mini-row.l3 .mini-val { color: var(--l3); text-shadow: 0 0 10px rgba(0,180,255,0.30); }
@@ -232,7 +232,7 @@
 .th-id .meta {
   display: flex; gap: 14px; flex-wrap: wrap;
   font-family: var(--font-mono);
-  font-size: 10.5px;
+  font-size: 12px;
   color: var(--text-dim);
   margin-top: 4px;
   letter-spacing: 0.06em;
@@ -286,10 +286,10 @@
 .th-status .label small {
   display: block;
   font-family: var(--font-mono);
-  font-size: 9.5px;
+  font-size: 11.5px;
   font-weight: 500;
-  letter-spacing: 0.16em;
-  color: var(--text-dim);
+  letter-spacing: 0.10em;
+  color: var(--text-sec);
   text-shadow: none;
   margin-top: 2px;
 }
@@ -315,14 +315,14 @@
 .th-stat.err::before   { background: var(--err);   box-shadow: 0 0 10px var(--err-glow); }
 .th-stat label {
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.20em;
-  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--text-sec);
   text-transform: uppercase;
 }
 .th-stat .v {
   font-family: var(--font-mono);
-  font-size: 19px;
+  font-size: 24px;
   font-weight: 700;
   color: var(--text-main);
   font-variant-numeric: tabular-nums;
@@ -330,7 +330,7 @@
   text-shadow: 0 0 14px var(--accent-glow);
 }
 .th-stat .v small {
-  font-size: 11px;
+  font-size: 13px;
   color: var(--text-dim);
   margin-left: 4px;
   font-weight: 500;

@@ -1,6 +1,6 @@
 // Charts.jsx — historical voltage/current/load chart
 
-function HistoryChart({ series, phaseMode }) {
+function HistoryChart({ series, phaseMode, hours }) {
   const W = 1100, H = 240;
   const padL = 50, padR = 20, padT = 24, padB = 32;
   const innerW = W - padL - padR;
@@ -10,13 +10,16 @@ function HistoryChart({ series, phaseMode }) {
   const [view, setView] = React.useState('voltage'); // voltage | load | battery
 
   const data = series[view] || [];
-  const empty = data.length === 0;
   // data: array of points {t, v_in, v_in_l2, v_in_l3, v_out, ...}
-  const xs = data.map((_, i) => i);
+  // NULL = el equipo estuvo sin conexión en ese punto: se deja HUECO en la
+  // línea (antes se dibujaba un 0 falso que desplomaba la gráfica).
   const allVals = [];
   data.forEach(d => {
-    Object.keys(d).forEach(k => { if (k !== 't' && typeof d[k] === 'number') allVals.push(d[k]); });
+    Object.keys(d).forEach(k => {
+      if (k !== 't' && typeof d[k] === 'number' && isFinite(d[k])) allVals.push(d[k]);
+    });
   });
+  const empty = data.length === 0 || allVals.length === 0;
   const yMin = Math.min(...allVals);
   const yMax = Math.max(...allVals);
   const yPad = (yMax - yMin) * 0.15 || 1;
@@ -59,7 +62,7 @@ function HistoryChart({ series, phaseMode }) {
   return (
     <section className="eng-panel chart-panel">
       <div className="eng-head">
-        <h3><i className="bi bi-graph-up ico"></i> Histórico · últimas 24 h</h3>
+        <h3><i className="bi bi-graph-up ico"></i> Histórico · últimas {hours || 6} h</h3>
         <div style={{ display: 'flex', gap: 6 }}>
           <button className={"btn " + (view === 'voltage' ? '' : 'ghost')} onClick={() => setView('voltage')}>Voltaje</button>
           <button className={"btn " + (view === 'load'    ? '' : 'ghost')} onClick={() => setView('load')}>Carga / I</button>
@@ -108,14 +111,31 @@ function HistoryChart({ series, phaseMode }) {
           {data.map((d, i) => i % xTickEvery === 0 && (
             <text key={i} x={xFor(i)} y={H - padB + 14} className="axis" textAnchor="middle">{d.t}</text>
           ))}
-          {/* Series lines + areas */}
+          {/* Series lines + areas — la línea se corta en los huecos (NULL) */}
           {lines.map(l => {
-            const pts = data.map((d, i) => `${xFor(i)},${yFor(d[l.key])}`).join(' ');
-            const area = `${xFor(0)},${yFor(y0)} ${pts} ${xFor(data.length - 1)},${yFor(y0)}`;
+            const segs = [];
+            let cur = [];
+            data.forEach((d, i) => {
+              const v = d[l.key];
+              if (v == null || !isFinite(v)) {
+                if (cur.length) { segs.push(cur); cur = []; }
+              } else {
+                cur.push([xFor(i), yFor(v)]);
+              }
+            });
+            if (cur.length) segs.push(cur);
             return (
               <g key={l.key}>
-                <polygon points={area} fill={l.color} opacity="0.06" />
-                <polyline points={pts} fill="none" stroke={l.stroke} strokeWidth="1.6" />
+                {segs.map((s, si) => {
+                  const pts = s.map(p => `${p[0]},${p[1]}`).join(' ');
+                  const area = `${s[0][0]},${yFor(y0)} ${pts} ${s[s.length - 1][0]},${yFor(y0)}`;
+                  return (
+                    <g key={si}>
+                      <polygon points={area} fill={l.color} opacity="0.06" />
+                      <polyline points={pts} fill="none" stroke={l.stroke} strokeWidth="1.8" />
+                    </g>
+                  );
+                })}
               </g>
             );
           })}
@@ -123,9 +143,11 @@ function HistoryChart({ series, phaseMode }) {
           {hover != null && (
             <g>
               <line x1={xFor(hover)} y1={padT} x2={xFor(hover)} y2={H - padB} stroke="rgba(255,255,255,0.18)" strokeDasharray="3 3" />
-              {lines.map(l => (
-                <circle key={l.key} cx={xFor(hover)} cy={yFor(data[hover][l.key])} r="3.5" fill={l.color} />
-              ))}
+              {lines.map(l => {
+                const v = data[hover][l.key];
+                if (v == null || !isFinite(v)) return null;
+                return <circle key={l.key} cx={xFor(hover)} cy={yFor(v)} r="3.5" fill={l.color} />;
+              })}
             </g>
           )}
           {/* Axes */}
@@ -138,12 +160,15 @@ function HistoryChart({ series, phaseMode }) {
             top: 36,
           }}>
             <strong>{data[hover].t}</strong>
-            {lines.map(l => (
-              <div key={l.key}>
-                <span style={{ color: l.color }}>● </span>
-                {l.name}: <b>{data[hover][l.key].toFixed(2)}</b>
-              </div>
-            ))}
+            {lines.map(l => {
+              const v = data[hover][l.key];
+              return (
+                <div key={l.key}>
+                  <span style={{ color: l.color }}>● </span>
+                  {l.name}: <b>{(v == null || !isFinite(v)) ? 'sin conexión' : v.toFixed(2)}</b>
+                </div>
+              );
+            })}
           </div>
         )}
         </>)}

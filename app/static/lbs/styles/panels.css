@@ -198,17 +198,17 @@
 .eng-head h3 {
   margin: 0;
   font-family: var(--font-disp);
-  font-size: 13px;
-  letter-spacing: 0.20em;
+  font-size: 15px;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--text-main);
   font-weight: 600;
   display: flex; align-items: center; gap: 10px;
 }
-.eng-head h3 .ico { color: var(--cyan); font-size: 15px; filter: drop-shadow(0 0 6px var(--cyan-glow)); }
+.eng-head h3 .ico { color: var(--cyan); font-size: 17px; filter: drop-shadow(0 0 6px var(--cyan-glow)); }
 .eng-head .live-badge {
   display: inline-flex; align-items: center; gap: 7px;
-  font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.18em;
+  font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em;
   color: var(--ok);
   text-transform: uppercase;
 }
@@ -257,12 +257,12 @@
 .kpi-label {
   display: flex; justify-content: space-between; align-items: center;
   font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.20em;
+  font-size: 11.5px;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--text-dim);
+  color: var(--text-sec);
 }
-.kpi-label .ico { font-size: 13px; color: var(--cyan); }
+.kpi-label .ico { font-size: 15px; color: var(--cyan); }
 .kpi-value {
   font-family: var(--font-mono);
   font-size: 26px;
@@ -329,11 +329,11 @@
   line-height: 1;
   text-shadow: 0 0 14px currentColor;
 }
-.gauge .center .u { font-size: 10px; color: var(--text-dim); margin-top: 3px; letter-spacing: 0.14em; }
+.gauge .center .u { font-size: 11.5px; color: var(--text-dim); margin-top: 3px; letter-spacing: 0.14em; }
 .gauge-label {
   margin-top: 10px;
   font-family: var(--font-mono);
-  font-size: 9.5px; letter-spacing: 0.18em;
+  font-size: 11.5px; letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-sec);
 }
@@ -355,18 +355,18 @@
 .kv:hover { border-color: var(--border-strong); }
 .kv label {
   font-family: var(--font-mono);
-  font-size: 9.5px; letter-spacing: 0.16em;
+  font-size: 11.5px; letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--text-dim);
+  color: var(--text-sec);
 }
 .kv .val {
   font-family: var(--font-mono);
-  font-size: 16px; font-weight: 700;
+  font-size: 20px; font-weight: 700;
   color: var(--text-main);
   font-variant-numeric: tabular-nums;
   margin-top: 3px;
 }
-.kv .val small { font-size: 11px; color: var(--text-dim); margin-left: 2px; font-weight: 400; }
+.kv .val small { font-size: 13px; color: var(--text-dim); margin-left: 3px; font-weight: 400; }
 
 /* ═══════ DONUT ═══════ */
 .donut-wrap { display: grid; grid-template-columns: 130px 1fr; gap: 18px; align-items: center; }
@@ -393,29 +393,29 @@
   border: 1px solid var(--border);
   border-left: 3px solid var(--text-dim);
   border-radius: var(--radius-sm);
-  font-size: 12px;
+  font-size: 13.5px;
   transition: all 200ms;
 }
 .alarm-row.warn { border-left-color: var(--warn); box-shadow: 0 0 14px rgba(255,176,0,0.10); }
 .alarm-row.err  { border-left-color: var(--err); background: rgba(255,58,92,0.05); box-shadow: 0 0 14px rgba(255,58,92,0.14); }
-.alarm-row .ts { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); }
+.alarm-row .ts { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-dim); }
 .alarm-row .msg b { color: var(--text-main); }
 .alarm-row .msg p { margin: 0; color: var(--text-sec); }
 
 /* ═══════ LOG ═══════ */
 .log {
   font-family: var(--font-mono);
-  font-size: 11px;
-  line-height: 1.55;
-  max-height: 180px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  max-height: 200px;
   overflow-y: auto;
   padding: 4px 0;
 }
 .log-line {
   display: grid;
-  grid-template-columns: 70px 50px 1fr;
+  grid-template-columns: minmax(80px, auto) 56px 1fr;
   gap: 12px;
-  padding: 3px 6px;
+  padding: 4px 6px;
   border-radius: 4px;
 }
 .log-line:hover { background: rgba(0,180,255,0.04); }
@@ -590,7 +590,7 @@
 .chart-legend {
   display: flex; gap: 14px; padding: 8px 18px;
   font-family: var(--font-mono);
-  font-size: 10px; letter-spacing: 0.14em; color: var(--text-dim);
+  font-size: 11.5px; letter-spacing: 0.12em; color: var(--text-sec);
   text-transform: uppercase;
   border-bottom: 1px solid rgba(140,200,255,0.08);
   background: linear-gradient(180deg, rgba(140,200,255,0.04), transparent);
@@ -609,7 +609,7 @@
 }
 .chart-svg-wrap svg { width: 100%; height: 100%; min-height: 220px; }
 .chart-svg-wrap svg .grid { stroke: rgba(140,200,255,0.07); stroke-dasharray: 2 4; }
-.chart-svg-wrap svg .axis { fill: var(--text-dim); font-family: var(--font-mono); font-size: 9.5px; letter-spacing: 0.10em; }
+.chart-svg-wrap svg .axis { fill: var(--text-dim); font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; }
 .chart-svg-wrap svg polyline {
   filter: drop-shadow(0 0 6px currentColor);
   stroke-dasharray: 2400;

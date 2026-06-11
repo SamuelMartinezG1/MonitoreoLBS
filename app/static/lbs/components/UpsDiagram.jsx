@@ -1,6 +1,25 @@
 // UpsDiagram.jsx — large, refraction-glass UPS flow diagram
-function UpsDiagram({ values, mode, phaseMode, showParticles }) {
+function UpsDiagram({ values, mode, phaseMode, showParticles, caps }) {
   const m = mode || 'online';
+  const has = (v) => v != null && v !== '—' && v !== 'N/D' && v !== '';
+
+  // DC bus: si el UPS no expone medición separada del DC link, el bus de
+  // batería (tensión del banco) es la lectura real disponible.
+  const dcBusVal  = has(values.dc_v) ? values.dc_v : (has(values.bat_v) ? values.bat_v : '—');
+  const dcBusUnit = has(values.dc_v) ? `V DC · ${values.dc_i || '—'} A` : 'V DC · BUS BATERÍA';
+
+  // Rectificador: el Modbus INVT reporta su estado textual (Normal /
+  // Arranque suave / Cerrado); SNMP UPS-MIB no lo expone.
+  const rectStatus = values.rect_status || null;
+
+  // Encabezado honesto: nada de "topología 3+1" ni eficiencia inventadas
+  const subParts = [
+    `FASES ${phaseMode === 'three' ? 'TRIFÁSICAS' : 'MONOFÁSICAS'}`,
+    'BANCO DE BATERÍAS',
+  ];
+  if (caps && caps.has_bypass) subParts.push('BYPASS');
+  if (has(values.efficiency)) subParts.push(`EFICIENCIA ${values.efficiency}%`);
+  const subText = subParts.join(' · ');
 
   const nodeCls = (key) => {
     let cls = 'ups-node';
@@ -109,7 +128,7 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
       <div className="ups-diagram-head">
         <div className="ups-title-wrap">
           <h2>Diagrama de flujo · UPS Online doble conversión</h2>
-          <span className="sub">TOPOLOGÍA 3+1 · BATT BANK · FASES {phaseMode === 'three' ? 'TRIFÁSICAS' : 'MONOFÁSICAS'} · EFICIENCIA {values.efficiency || '—'}%</span>
+          <span className="sub">{subText}</span>
         </div>
         <span className={"pill " + statusInfo.cls} style={{ background: statusInfo.tone, borderColor: statusInfo.stroke, color: statusInfo.stroke }}>
           <span className="dot"></span>
@@ -193,16 +212,19 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
           <path d="M 105 180 C 105 100, 985 100, 985 180" className={connCls('bypass')} />
           {partCls('bypass') && <path d="M 105 180 C 105 100, 985 100, 985 180" className={partCls('bypass')} />}
 
-          {/* Bypass label centered */}
+          {/* Bypass label centered — con tensión real cuando el UPS la reporta */}
           <g transform="translate(545,110)">
-            <rect x="-90" y="-15" width="180" height="30" rx="15" 
-                  fill="rgba(10,16,38,0.88)" 
-                  stroke="rgba(255,176,0,0.40)" strokeWidth="1" />
-            <circle cx="-72" cy="0" r="3" fill="var(--warn)" 
-                    style={{ filter: 'drop-shadow(0 0 4px var(--warn-glow))' }} />
-            <text x="-62" y="4" textAnchor="start" 
-                  style={{ fill: 'var(--warn)', fontFamily: 'var(--font-mono)', fontSize: 10.5, letterSpacing: '0.22em', fontWeight: 600 }}>
-              BYPASS · STATIC SWITCH
+            <title>{`Bypass estático${has(values.bypass_v) ? ` · ${values.bypass_v} V` : ''} — ${m === 'bypass' ? 'ACTIVO: la carga se alimenta directo de la red' : 'en espera'}`}</title>
+            <rect x="-105" y="-16" width="210" height="32" rx="16"
+                  fill={m === 'bypass' ? 'rgba(255,176,0,0.16)' : 'rgba(10,16,38,0.88)'}
+                  stroke={m === 'bypass' ? 'var(--warn)' : 'rgba(255,176,0,0.40)'} strokeWidth={m === 'bypass' ? 1.6 : 1} />
+            <circle cx="-88" cy="0" r="3.5" fill="var(--warn)"
+                    style={{ filter: 'drop-shadow(0 0 4px var(--warn-glow))' }}>
+              {m === 'bypass' && <animate attributeName="opacity" values="1;0.3;1" dur="1.2s" repeatCount="indefinite" />}
+            </circle>
+            <text x="-76" y="4.5" textAnchor="start"
+                  style={{ fill: 'var(--warn)', fontFamily: 'var(--font-mono)', fontSize: 12.5, letterSpacing: '0.14em', fontWeight: 700 }}>
+              {m === 'bypass' ? 'BYPASS ACTIVO' : 'BYPASS'}{has(values.bypass_v) ? ` · ${values.bypass_v} V` : ' · STATIC SW'}
             </text>
           </g>
 
@@ -210,6 +232,7 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
 
           {/* N01 · MAINS */}
           <g className={nodeCls('mains')}>
+            <title>{`Red AC de entrada\nTensión: ${values.v_in} V · Frecuencia: ${values.freq_in} Hz${has(values.i_in) ? `\nCorriente: ${values.i_in} A` : ''}${phaseMode === 'three' ? `\nL2: ${values.v_in_l2} V · L3: ${values.v_in_l3} V` : ''}`}</title>
             <Glass x={20} y={180} w={170} h={150} v="blue" />
             <text x="38" y="206" className="n-id">N01 · MAINS</text>
             <text x="105" y="240" className="n-val" textAnchor="middle">{values.v_in}</text>
@@ -222,12 +245,19 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
             <text x="105" y="316" className="n-label" textAnchor="middle">RED AC</text>
           </g>
 
-          {/* N02 · RECTIFIER */}
+          {/* N02 · RECTIFIER — estado real del Modbus INVT cuando existe */}
           <g className={nodeCls('rect')}>
+            <title>{rectStatus
+              ? `Rectificador — estado reportado por el UPS: ${rectStatus}`
+              : 'Rectificador — este UPS no expone telemetría del rectificador'}</title>
             <Glass x={240} y={180} w={170} h={150} v="blue" />
             <text x="258" y="206" className="n-id">N02 · RECT</text>
-            <text x="325" y="240" className="n-val" textAnchor="middle">{values.dc_v_rect || '—'}</text>
-            <text x="325" y="258" className="n-unit" textAnchor="middle">V DC · η {values.eff_rect || '—'}%</text>
+            {rectStatus ? (
+              <text x="325" y="244" className="n-val small" textAnchor="middle">{rectStatus.toUpperCase()}</text>
+            ) : (
+              <text x="325" y="240" className="n-val" textAnchor="middle">{has(values.dc_v_rect) ? values.dc_v_rect : '—'}</text>
+            )}
+            <text x="325" y="258" className="n-unit" textAnchor="middle">{rectStatus ? 'ESTADO' : 'SIN TELEMETRÍA'}</text>
             <g transform="translate(325,288)" className="n-icon">
               <rect x="-16" y="-16" width="32" height="32" rx="3" fill="none" />
               <line x1="-16" y1="16" x2="16" y2="-16" />
@@ -238,12 +268,14 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
             <text x="325" y="316" className="n-label" textAnchor="middle">RECTIFICADOR</text>
           </g>
 
-          {/* N03 · DC BUS */}
+          {/* N03 · DC BUS — usa la tensión del banco de baterías (la medición
+              real disponible del bus DC en estos UPS) */}
           <g className={nodeCls('dcbus')}>
+            <title>{`Bus DC\n${has(values.dc_v) ? `Medición directa: ${values.dc_v} V` : `Tensión del banco de baterías: ${values.bat_v} V DC`}${has(values.bat_i) ? `\nCorriente batería: ${values.bat_i} A` : ''}`}</title>
             <Glass x={460} y={180} w={170} h={150} v="cyan" />
             <text x="478" y="206" className="n-id">N03 · DC BUS</text>
-            <text x="545" y="240" className="n-val" textAnchor="middle">{values.dc_v || '—'}</text>
-            <text x="545" y="258" className="n-unit" textAnchor="middle">V DC · {values.dc_i || '—'} A</text>
+            <text x="545" y="240" className="n-val" textAnchor="middle">{dcBusVal}</text>
+            <text x="545" y="258" className="n-unit" textAnchor="middle">{dcBusUnit}</text>
             <g transform="translate(545,290)">
               <line x1="-32" y1="-7" x2="32" y2="-7" stroke="rgba(34,225,255,0.95)" strokeWidth="2.4"
                     style={{ filter: 'drop-shadow(0 0 6px var(--cyan-glow))' }} />
@@ -256,10 +288,11 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
 
           {/* N04 · INVERTER */}
           <g className={nodeCls('inv')}>
+            <title>{`Inversor\nSalida: ${values.v_out} V · ${values.freq_out} Hz${phaseMode === 'three' ? `\nL2: ${values.v_out_l2} V · L3: ${values.v_out_l3} V` : ''}`}</title>
             <Glass x={680} y={180} w={170} h={150} v="blue" />
             <text x="698" y="206" className="n-id">N04 · INV</text>
             <text x="765" y="240" className="n-val" textAnchor="middle">{values.v_out}</text>
-            <text x="765" y="258" className="n-unit" textAnchor="middle">V · η {values.eff_inv || '—'}%</text>
+            <text x="765" y="258" className="n-unit" textAnchor="middle">V · {values.freq_out} HZ</text>
             <g transform="translate(765,288)" className="n-icon">
               <rect x="-16" y="-16" width="32" height="32" rx="3" fill="none" />
               <line x1="-16" y1="16" x2="16" y2="-16" />
@@ -272,6 +305,7 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
 
           {/* N05 · STATIC SWITCH / OUTPUT */}
           <g className={nodeCls('out')}>
+            <title>{`Salida hacia la carga\nTensión: ${values.v_out} V · Corriente: ${values.i_out} A\nCarga: ${Math.round(loadPct)}%${m === 'bypass' ? '\n⚠ Alimentada por BYPASS (red directa, sin respaldo)' : ''}`}</title>
             <Glass x={900} y={180} w={170} h={150} v="blue" />
             <text x="918" y="206" className="n-id">N05 · OUT</text>
             <text x="985" y="240" className="n-val" textAnchor="middle">{values.v_out}</text>
@@ -290,6 +324,7 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
 
           {/* N06 · LOAD */}
           <g className={nodeCls('load')}>
+            <title>{`Carga conectada: ${Math.round(loadPct)}%\nPot. activa: ${values.load_kw} kW · aparente: ${values.load_kva} kVA${has(values.pf) ? `\nFactor de potencia: ${values.pf}` : ''}`}</title>
             <Glass x={1120} y={180} w={170} h={150} v="blue" />
             <text x="1138" y="206" className="n-id">N06 · LOAD</text>
             <text x="1205" y="240" className="n-val" textAnchor="middle">{values.load_kw || '—'}</text>
@@ -321,6 +356,7 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
 
           {/* N07 · BATTERY BANK (centered under DC BUS) */}
           <g className={nodeCls('batt')}>
+            <title>{`Banco de baterías: ${Math.round(batPct)}%\nTensión: ${values.bat_v} V DC${has(values.bat_i) ? ` · Corriente: ${values.bat_i} A` : ''}${has(values.bat_temp) ? `\nTemperatura: ${values.bat_temp} °C` : ''}${has(values.runtime) ? `\nAutonomía: ${values.runtime}` : ''}${has(values.discharges) ? `\n${values.discharges_label || 'Descargas'}: ${values.discharges}` : ''}`}</title>
             <Glass x={445} y={370} w={200} h={150} v="green" />
             <text x="463" y="396" className="n-id">N07 · BATT BANK</text>
             <g transform="translate(545,432)">
@@ -347,7 +383,7 @@ function UpsDiagram({ values, mode, phaseMode, showParticles }) {
             <rect x="475" y="487" width={(batPct/100)*140} height="6" rx="3"
                   className={"batt-fill " + batCls} />
             <text x="545" y="510" className="n-label" textAnchor="middle">
-              {values.bat_v || '—'} V · {values.runtime || '—'}
+              {values.bat_v || '—'} V{has(values.bat_temp) ? ` · ${values.bat_temp}°C` : ''} · {values.runtime || '—'}
             </text>
           </g>
         </svg>
