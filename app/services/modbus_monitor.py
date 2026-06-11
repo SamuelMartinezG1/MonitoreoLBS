@@ -31,6 +31,7 @@ from pymodbus.client import ModbusTcpClient
 
 from app.services import capabilities
 from app.services import poll_errors
+from app.services import power_quality
 from app.services.connection_tracker import tracker
 from app.services.pg_metrics import influx_service
 from app.base_datos import GestorDB
@@ -536,14 +537,17 @@ class ModbusMonitor:
         # Estado CONFIRMADO por el tracker (histéresis para el enlace flaky)
         if poll_ok:
             conn_state = tracker.report_success(dev_id, name)
+            caps = capabilities.from_modbus(data, status_data, mapped, ups_type)
             if status_data:
                 # Solo en ciclos donde se leyó el bloque de estado: evita
                 # falsos DISCHARGE_END por ausencia de lectura.
                 tracker.report_power_state(
-                    dev_id, name, status_data.get('battery_status_raw') == 4)
+                    dev_id, name, status_data.get('battery_status_raw') == 4,
+                    runtime_min=mapped.get('battery_remain_time'))
+            # Alarmas de umbral + calidad de energía (sag/swell, desbalanceo, frecuencia)
+            alarms = alarms + power_quality.check_power_quality(mapped, caps)
             tracker.report_alarms(dev_id, name, alarms)
-            self._caps.update(
-                dev_id, capabilities.from_modbus(data, status_data, mapped, ups_type))
+            self._caps.update(dev_id, caps)
         else:
             if connected:
                 code, detail = _classify_read_failure(read_errors)

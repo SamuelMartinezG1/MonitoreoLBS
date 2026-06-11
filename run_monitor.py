@@ -41,6 +41,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger('lbs-portal')
 
+# Las tarjetas web de estos UPS chinos responden con HTTP malformado (meten el
+# Content-type en el body), lo que hace que urllib3 escupa un HeaderParsingError
+# ruidoso aunque la petición sí funcione. Lo silenciamos: no afecta la lectura.
+logging.getLogger('urllib3.connectionpool').setLevel(logging.ERROR)
+
 
 # --------------------------------------------------------------------------- #
 # Cleanup scheduler (APScheduler — corre fuera del loop de polling)            #
@@ -74,11 +79,18 @@ def _start_cleanup_scheduler(db: GestorDB):
         except Exception as e:
             logger.warning('event_log job: %s', e)
 
+    # IMPORTANTE: NO pasar next_run_time=None — en APScheduler 3.x eso deja el
+    # job PAUSADO para siempre (nunca corre). Omitirlo hace que el primer
+    # disparo sea a un intervalo desde el arranque, que es lo que queremos.
     sched = BackgroundScheduler(daemon=True, timezone='UTC')
     sched.add_job(_job, 'interval', minutes=interval_min, id='lbs_cleanup',
-                  next_run_time=None, replace_existing=True)
+                  replace_existing=True)
+    # El log de eventos: primera colecta ~30 s tras el arranque (para poblar de
+    # inmediato sin esperar el intervalo completo) y luego cada event_min.
+    from datetime import datetime, timedelta, timezone as _tz
     sched.add_job(_event_job, 'interval', minutes=event_min, id='lbs_event_log',
-                  next_run_time=None, replace_existing=True)
+                  next_run_time=datetime.now(_tz.utc) + timedelta(seconds=30),
+                  replace_existing=True)
     sched.start()
     logger.info('Cleanup scheduler arrancado (cleanup %d min, event-log %d min)',
                 interval_min, event_min)

@@ -138,6 +138,8 @@ def estado_flota():
             'alarmas_activas':  tracker.get_active_alarms(dev_id),
             'capabilities':     _caps_for(db, monitor, dev_id, dev),
             'descargas_portal': tracker.get_discharge_count(dev_id),
+            # Control disponible solo en tarjetas NetAgent (UPS A)
+            'controllable':     (dev.get('event_source') == 'netagent_xml'),
         })
     return jsonify({'status': 'ok', 'devices': flota})
 
@@ -612,3 +614,45 @@ def refrescar_eventos_ups(device_id):
     eventos = collect_device(dev)
     n = db.insertar_eventos_ups(device_id, eventos) if eventos else 0
     return jsonify({'status': 'ok', 'colectados': len(eventos), 'insertados': n})
+
+
+# =========================================================================
+# CONTROL SEGURO DEL UPS (test de batería / buzzer) — solo acciones de bajo
+# riesgo, con whitelist, permiso por rol y auditoría en ups_event_log.
+# =========================================================================
+@monitoreo_bp.route('/api/monitoreo/<int:device_id>/control', methods=['POST'])
+@login_required
+@permiso_requerido('scada')
+@requiere_rol('admin', 'tecnico')
+def control_ups(device_id):
+    from flask_login import current_user
+    from app.services import ups_control
+    db = current_app.db
+    dev = next((d for d in db.obtener_monitoreo_ups() if d.get('id') == device_id), None)
+    if not dev:
+        return jsonify({'status': 'error', 'mensaje': 'Dispositivo no encontrado'}), 404
+
+    body = request.get_json(silent=True) or {}
+    action = (body.get('action') or '').strip()
+    params = body.get('params') or {}
+    if action not in ('battery_test', 'cancel_test', 'buzzer'):
+        return jsonify({'status': 'error', 'mensaje': 'Acción no permitida'}), 400
+
+    try:
+        res = ups_control.ejecutar_control(dev, action, params)
+    except ups_control.ControlNotSupported as e:
+        return jsonify({'status': 'error', 'mensaje': str(e)}), 501
+    except ups_control.ControlError as e:
+        return jsonify({'status': 'error', 'mensaje': str(e)}), 502
+
+    # Auditoría: queda en el log de eventos del portal.
+    usuario = getattr(current_user, 'username', '?')
+    try:
+        db.insertar_evento_portal(
+            device_id, 'CONTROL',
+            f'Acción de control: {res["detail"]} (por {usuario})',
+            nivel='info', raw=f'action={action};params={params}')
+    except Exception as e:
+        logger.warning('auditoría de control %s: %s', device_id, e)
+
+    return jsonify({'status': 'ok', 'detail': res['detail']})

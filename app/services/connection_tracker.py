@@ -58,6 +58,9 @@ class ConnectionTracker:
         self._alarm_on_cycles  = int(os.environ.get('ALARM_CONFIRM_CYCLES', 3))
         self._alarm_off_cycles = int(os.environ.get('ALARM_CLEAR_CYCLES', 5))
         self._discharge_confirm = int(os.environ.get('DISCHARGE_CONFIRM_SAMPLES', 2))
+        # Salud de batería: avisar si la autonomía de arranque cae por debajo de
+        # este ratio del promedio de descargas previas (0.70 = 30% peor).
+        self._battery_health_ratio = float(os.environ.get('BATTERY_HEALTH_RATIO', 0.70))
 
     # ------------------------------------------------------------------ #
     # Estado interno                                                      #
@@ -71,6 +74,7 @@ class ConnectionTracker:
             'battery_pending': 0,
             'alarm_latch': {},          # code -> {active,on,off,level,msg}
             'discharge_count': 0,
+            'discharge_runtimes': [],   # autonomías de arranque (salud batería)
         }
 
     def _ensure(self, dev_id: int) -> dict:
@@ -173,10 +177,14 @@ class ConnectionTracker:
             logger.warning("UPS %s sin conexión: %s (%s)", name, code, detail)
         return public
 
-    def report_power_state(self, dev_id: int, name: str, on_battery: bool):
-        """Detección de descargas con debounce de N muestras consecutivas."""
+    def report_power_state(self, dev_id: int, name: str, on_battery: bool,
+                           runtime_min=None):
+        """Detección de descargas con debounce de N muestras consecutivas.
+        `runtime_min` (autonomía estimada al iniciar la descarga) alimenta la
+        tendencia de SALUD de batería: si cae respecto a descargas previas,
+        emite un evento BATTERY_HEALTH."""
         st = self._ensure(dev_id)
-        event = None
+        events = []
         with self._lock:
             if on_battery == st['on_battery']:
                 st['battery_pending'] = 0
@@ -188,22 +196,42 @@ class ConnectionTracker:
                     if on_battery:
                         st['battery_since'] = _now()
                         st['discharge_count'] += 1
-                        event = ('DISCHARGE_START',
-                                 'Descarga de batería iniciada — UPS operando en batería',
-                                 'warning', None)
+                        events.append(('DISCHARGE_START',
+                                       'Descarga de batería iniciada — UPS operando en batería',
+                                       'warning', None))
+                        # Tendencia de salud: comparar la autonomía de arranque
+                        # con el promedio de descargas previas.
+                        try:
+                            rt = float(runtime_min) if runtime_min is not None else None
+                        except (TypeError, ValueError):
+                            rt = None
+                        if rt is not None and rt > 0:
+                            prev = st['discharge_runtimes']
+                            if len(prev) >= 2:
+                                avg = sum(prev) / len(prev)
+                                if avg > 0 and rt < self._battery_health_ratio * avg:
+                                    events.append((
+                                        'BATTERY_HEALTH',
+                                        f'Salud de batería: autonomía de arranque '
+                                        f'{rt:.0f} min, {100*rt/avg:.0f}% del promedio '
+                                        f'previo ({avg:.0f} min) — posible degradación',
+                                        'warning',
+                                        f'runtime={rt};avg={avg:.1f}'))
+                            prev.append(rt)
+                            del prev[:-10]  # conservar las últimas 10
                     else:
                         dur = ''
                         if st['battery_since']:
                             dur = _fmt_duration(
                                 (_now() - st['battery_since']).total_seconds())
                         st['battery_since'] = None
-                        event = ('DISCHARGE_END',
-                                 'Descarga de batería finalizada'
-                                 + (f' (duración {dur})' if dur else ''),
-                                 'info', None)
-        if event:
-            self._persist(dev_id, name, event[0], event[1], event[2], event[3])
-            logger.warning("UPS %s: %s", name, event[1])
+                        events.append(('DISCHARGE_END',
+                                       'Descarga de batería finalizada'
+                                       + (f' (duración {dur})' if dur else ''),
+                                       'info', None))
+        for ev in events:
+            self._persist(dev_id, name, ev[0], ev[1], ev[2], ev[3])
+            logger.warning("UPS %s: %s", name, ev[1])
 
     def report_alarms(self, dev_id: int, name: str, alarms: list):
         """Latch de alarmas de umbral: ALARM_ON tras N ciclos consecutivos,

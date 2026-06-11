@@ -145,6 +145,14 @@ class MinimalSNMPClient:
         input_freq = safe_float(raw.get('megatec_input_freq', 0), 10.0)
         batt_capacity = safe_float(raw.get('megatec_batt_capacity', 0), 1.0) # Ya esta en %
         load_pct = safe_float(raw.get('megatec_output_load', 0), 1.0)
+
+        # Defensa: algunos NetAgent devuelven en el OID Megatec de batería un
+        # valor que NO es la tensión total del banco (p.ej. 22 -> 2.2 V en un
+        # equipo de 120 V). Si es absurdo respecto a la entrada, no lo damos
+        # como real: None -> la UI muestra "—" en vez de un voltaje falso.
+        # (Lo correcto para NetAgent es ups_type='hybrid' / UPS-MIB.)
+        if input_voltage > 50 and 0 < battery_voltage < 10:
+            battery_voltage = None
         
         data = {
             # === DATOS REALES === 

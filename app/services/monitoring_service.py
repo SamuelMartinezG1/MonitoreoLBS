@@ -28,6 +28,7 @@ import logging
 from app.base_datos import GestorDB
 from app.services import capabilities
 from app.services import poll_errors
+from app.services import power_quality
 from app.services.connection_tracker import tracker
 from app.services.modbus_monitor import ModbusMonitor
 from app.services.poll_errors import PollFailure
@@ -273,13 +274,16 @@ class MonitoringService(threading.Thread):
 
                 mapped_data = _map_data_to_frontend(data, ups_type)
                 self.ultimo_estado[str(dev_id)] = mapped_data
+                caps = capabilities.from_snmp(data, ups_type)
                 alarms = _check_snmp_alarms(mapped_data)
+                alarms += power_quality.check_power_quality(mapped_data, caps)
 
                 conn_state = tracker.report_success(dev_id, name)
                 tracker.report_power_state(
-                    dev_id, name, mapped_data.get('power_mode') == 'Battery')
+                    dev_id, name, mapped_data.get('power_mode') == 'Battery',
+                    runtime_min=mapped_data.get('battery_remain_time'))
                 tracker.report_alarms(dev_id, name, alarms)
-                self._caps.update(dev_id, capabilities.from_snmp(data, ups_type))
+                self._caps.update(dev_id, caps)
             else:
                 conn_state = tracker.report_failure(
                     dev_id, name, poll_errors.NO_DATA, 'lectura vacía')

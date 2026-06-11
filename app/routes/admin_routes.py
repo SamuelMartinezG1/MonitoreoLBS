@@ -58,7 +58,7 @@ def users_create():
     return jsonify({'status': 'ok', 'id': res['id']})
 
 
-@admin_bp.route('/api/users/<int:user_id>', methods=['PUT'])
+@admin_bp.route('/api/users/<user_id>', methods=['PUT'])
 @login_required
 @requiere_rol('admin')
 def users_update(user_id):
@@ -69,7 +69,7 @@ def users_update(user_id):
     return jsonify({'status': 'ok'})
 
 
-@admin_bp.route('/api/users/<int:user_id>/password', methods=['POST'])
+@admin_bp.route('/api/users/<user_id>/password', methods=['POST'])
 @login_required
 @requiere_rol('admin')
 def users_set_password(user_id):
@@ -80,11 +80,11 @@ def users_set_password(user_id):
     return jsonify({'status': 'ok'})
 
 
-@admin_bp.route('/api/users/<int:user_id>', methods=['DELETE'])
+@admin_bp.route('/api/users/<user_id>', methods=['DELETE'])
 @login_required
 @requiere_rol('admin')
 def users_delete(user_id):
-    if user_id == current_user.id:
+    if str(user_id) == str(current_user.id):
         return jsonify({'error': 'No puedes eliminarte a ti mismo'}), 400
     res = eliminar_usuario(user_id)
     if 'error' in res:

@@ -3,10 +3,11 @@ function UpsDiagram({ values, mode, phaseMode, showParticles, caps }) {
   const m = mode || 'online';
   const has = (v) => v != null && v !== '—' && v !== 'N/D' && v !== '';
 
-  // DC bus: si el UPS no expone medición separada del DC link, el bus de
-  // batería (tensión del banco) es la lectura real disponible.
-  const dcBusVal  = has(values.dc_v) ? values.dc_v : (has(values.bat_v) ? values.bat_v : '—');
-  const dcBusUnit = has(values.dc_v) ? `V DC · ${values.dc_i || '—'} A` : 'V DC · BUS BATERÍA';
+  // DC bus: SOLO mostramos un voltaje si el UPS expone la medición real del
+  // bus DC. La tensión de batería NO es el bus DC (va en el nodo de batería).
+  const hasDcBus  = has(values.dc_v);
+  const dcBusVal  = hasDcBus ? values.dc_v : (m === 'online' || m === 'battery' ? 'OK' : '—');
+  const dcBusUnit = hasDcBus ? `V DC · ${values.dc_i || '—'} A` : 'ENLACE DC';
 
   // Rectificador: el Modbus INVT reporta su estado textual (Normal /
   // Arranque suave / Cerrado); SNMP UPS-MIB no lo expone.
@@ -268,13 +269,20 @@ function UpsDiagram({ values, mode, phaseMode, showParticles, caps }) {
             <text x="325" y="316" className="n-label" textAnchor="middle">RECTIFICADOR</text>
           </g>
 
-          {/* N03 · DC BUS — usa la tensión del banco de baterías (la medición
-              real disponible del bus DC en estos UPS) */}
+          {/* N03 · DC BUS — solo muestra voltaje si el UPS expone la medición
+              real del bus DC; si no, indica el estado del enlace (la tensión
+              de batería pertenece al nodo N07, no aquí). */}
           <g className={nodeCls('dcbus')}>
-            <title>{`Bus DC\n${has(values.dc_v) ? `Medición directa: ${values.dc_v} V` : `Tensión del banco de baterías: ${values.bat_v} V DC`}${has(values.bat_i) ? `\nCorriente batería: ${values.bat_i} A` : ''}`}</title>
+            <title>{hasDcBus
+              ? `Bus DC — medición directa: ${values.dc_v} V${has(values.dc_i) ? ` · ${values.dc_i} A` : ''}`
+              : 'Bus DC — este UPS no expone la tensión del bus DC. La tensión del banco de baterías se muestra en el nodo BATERÍA.'}</title>
             <Glass x={460} y={180} w={170} h={150} v="cyan" />
             <text x="478" y="206" className="n-id">N03 · DC BUS</text>
-            <text x="545" y="240" className="n-val" textAnchor="middle">{dcBusVal}</text>
+            {hasDcBus ? (
+              <text x="545" y="240" className="n-val" textAnchor="middle">{dcBusVal}</text>
+            ) : (
+              <text x="545" y="242" className="n-val small" textAnchor="middle">{dcBusVal}</text>
+            )}
             <text x="545" y="258" className="n-unit" textAnchor="middle">{dcBusUnit}</text>
             <g transform="translate(545,290)">
               <line x1="-32" y1="-7" x2="32" y2="-7" stroke="rgba(34,225,255,0.95)" strokeWidth="2.4"

@@ -70,6 +70,7 @@
     // ── Telemetría / historial / analytics ─────────────────────────────
     getUltimoEstado:   (id)              => _json('GET', `/api/monitoreo/ultimo-estado/${id}`),
     getEstadoFlota:    ()                => _json('GET', '/api/monitoreo/estado-flota'),
+    controlUps:        (id, action, params) => _json('POST', `/api/monitoreo/${id}/control`, { action, params }),
     getTelemetria:     (id, mins = 10)   => _json('GET', `/api/telemetry/recent/${id}?minutes=${mins}`),
     getHistorial:      (id, horas = 6)   => _json('GET', `/api/ups-history/${id}?horas=${horas}`),
     getCalidadEnergia: (id, horas = 24)  => _json('GET', `/api/monitoreo/calidad-energia/${id}?horas=${horas}`),
@@ -186,6 +187,7 @@
       capabilities:     (d._flota || {}).capabilities || null,
       power_mode:       (d._flota || {}).power_mode,
       runtime_min:      Number((d._flota || {}).battery_remain_time) || 0,
+      controllable:     !!(d._flota || {}).controllable,
       protocolo: d.protocolo,
       ups_type:  d.ups_type,
       fases:     d.fases,
