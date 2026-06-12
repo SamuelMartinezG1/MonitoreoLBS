@@ -25,6 +25,7 @@ import threading
 import asyncio
 import logging
 
+from app import config
 from app.base_datos import GestorDB
 from app.services import capabilities
 from app.services import poll_errors
@@ -85,8 +86,8 @@ class MonitoringService(threading.Thread):
         self._snmp_ttl = int(os.environ.get('SNMP_CLIENT_TTL_S', 300))
 
         # Throttling por timestamp (en vez de contador de ciclos)
-        self._metrics_interval = int(os.environ.get('METRICS_SAMPLE_INTERVAL_S', 30))
-        self._history_interval = int(os.environ.get('HISTORY_SAMPLE_INTERVAL_S', 30))
+        self._metrics_interval = config.METRICS_SAMPLE_INTERVAL_S
+        self._history_interval = config.HISTORY_SAMPLE_INTERVAL_S
         self._last_metric_write:  dict[int, float] = {}
         self._last_history_write: dict[int, float] = {}
 

@@ -562,7 +562,7 @@ class GestorDB:
             return 0
 
     # ====================================================================== #
-    # Historial de gráficas (~30 s por punto)                                #
+    # Historial de gráficas (~60 s por punto, HISTORY_SAMPLE_INTERVAL_S)     #
     # ====================================================================== #
     def obtener_ultimo_estado(self, device_id):
         """Última lectura de ups_chart_history (para evitar delay en UI)."""
@@ -661,6 +661,29 @@ class GestorDB:
                 return rows
         except Exception as e:
             logger.warning("obtener_historial_device: %s", e)
+            return []
+
+    def obtener_stats_historial(self):
+        """Conteo y rango de fechas de ups_chart_history por dispositivo."""
+        try:
+            with self.pool.get_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    SELECT device_id, COUNT(*) AS filas,
+                           MIN(timestamp) AS desde, MAX(timestamp) AS hasta
+                      FROM ups_chart_history
+                     GROUP BY device_id
+                    """
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+                for r in rows:
+                    for k in ('desde', 'hasta'):
+                        if r.get(k):
+                            r[k] = r[k].isoformat()
+                return rows
+        except Exception as e:
+            logger.warning("obtener_stats_historial: %s", e)
             return []
 
     def limpiar_historial_antiguo(self, dias: int = 7) -> int:

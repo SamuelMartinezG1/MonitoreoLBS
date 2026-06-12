@@ -29,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from pymodbus.client import ModbusTcpClient
 
+from app import config
 from app.services import capabilities
 from app.services import poll_errors
 from app.services import power_quality
@@ -295,8 +296,8 @@ class ModbusMonitor:
         self._executor: ThreadPoolExecutor | None = None
 
         # Intervalos por dispositivo (no contador de ciclos globales).
-        self._metrics_interval = int(os.environ.get('METRICS_SAMPLE_INTERVAL_S', 30))
-        self._history_interval = int(os.environ.get('HISTORY_SAMPLE_INTERVAL_S', 30))
+        self._metrics_interval = config.METRICS_SAMPLE_INTERVAL_S
+        self._history_interval = config.HISTORY_SAMPLE_INTERVAL_S
         self._last_metric_write:  dict[int, float] = {}
         self._last_history_write: dict[int, float] = {}
 

@@ -45,7 +45,7 @@ function Toolbox({ status, statusLabel, device, ageText }) {
           <i className="bi bi-clock-history" style={{ color: 'var(--text-dim)' }}></i>
           <div>
             <b>ÚLTIMA LECTURA</b>
-            <span>{ageText || '—'}</span>
+            <span className="age-text">{ageText || '—'}</span>
           </div>
         </div>
       </div>
@@ -66,6 +66,13 @@ function Toolbox({ status, statusLabel, device, ageText }) {
           <a className="tb-cmd" href={proxyUrl} target="_blank" rel="noopener" title="Abrir la interfaz web del UPS">
             <i className="bi bi-box-arrow-up-right"></i>
             <span>Abrir panel del UPS</span>
+          </a>
+        )}
+        {dev.id && (
+          <a className="tb-cmd" href={`/monitoreo/reporte/${dev.id}`} target="_blank" rel="noopener"
+             title="Hoja de estado imprimible con membrete LBS (Imprimir → Guardar PDF)">
+            <i className="bi bi-file-earmark-text"></i>
+            <span>Reporte de estado (PDF)</span>
           </a>
         )}
       </div>

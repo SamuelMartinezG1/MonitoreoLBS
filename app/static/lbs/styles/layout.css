@@ -237,8 +237,15 @@
   margin-top: 4px;
   letter-spacing: 0.06em;
 }
-.th-id .meta span { display: inline-flex; align-items: center; gap: 5px; }
+.th-id .meta span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .th-id .meta i { color: var(--cyan); font-size: 11px; }
+/* Ancho reservado para «hace 59s» … «Sin datos»: el tick del reloj cambia el
+   texto sin re-fluir el resto del hero. */
+.age-text {
+  display: inline-block;
+  min-width: 9ch;
+  font-variant-numeric: tabular-nums;
+}
 
 .th-status {
   display: flex; align-items: center; gap: 12px;

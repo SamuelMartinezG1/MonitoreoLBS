@@ -14,7 +14,7 @@ const { useState, useEffect, useMemo, useRef } = React;
 const DASH = '—';
 const ND   = 'N/D';
 // Si no llega una lectura nueva en este tiempo, la consideramos vieja (stale).
-const STALE_MS = 90000; // 90 s ≈ 3× el intervalo de muestreo (30 s)
+const STALE_MS = 180000; // 180 s ≈ 3× el intervalo de muestreo (60 s)
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function _modeFromPowerSource(ps) {
@@ -27,16 +27,18 @@ function _modeFromPowerSource(ps) {
   return 'online';
 }
 
+// Una sola unidad a partir del minuto: el texto mantiene un ancho estable
+// entre ticks y no provoca saltos de layout en el hero.
 function _fmtAgo(ms) {
   if (ms == null || !isFinite(ms) || ms < 0) return DASH;
   const s = Math.floor(ms / 1000);
   if (s < 60) return `hace ${s}s`;
   const m = Math.floor(s / 60);
-  if (m < 60) return `hace ${m}m ${s % 60}s`;
+  if (m < 60) return `hace ${m}m`;
   const h = Math.floor(m / 60);
-  if (h < 24) return `hace ${h}h ${m % 60}m`;
+  if (h < 24) return `hace ${h}h`;
   const d = Math.floor(h / 24);
-  return `hace ${d}d ${h % 24}h`;
+  return `hace ${d}d`;
 }
 
 // Convierte un registro real (de BD o de Socket.IO) al shape que usan los paneles.
@@ -178,6 +180,7 @@ function App() {
   const [alarmsLive, setAlarmsLive]   = useState([]);
   const [series, setSeries]           = useState({ voltage: [], load: [], battery: [] });
   const [eventLog, setEventLog]       = useState([]);
+  const [histStats, setHistStats]     = useState(null); // puntos guardados + retención
 
   // Reloj para recalcular «hace X» y la antigüedad (stale)
   const [nowTick, setNowTick] = useState(() => Date.now());
@@ -267,9 +270,25 @@ function App() {
         });
       }).catch(() => {});
     };
+    // Stats del histórico (cuántos puntos guarda la BD y por cuántos días):
+    // cambia lento, basta refrescarlo cada 5 min.
+    const loadStats = () => {
+      window.LBS_API.getHistoricoStats().then(j => {
+        if (cancelled || !j || j.status !== 'ok') return;
+        const mine = (j.devices || []).find(d => String(d.device_id) === String(activeDevice.id));
+        setHistStats({
+          filas: mine ? mine.filas : 0,
+          desde: mine ? mine.desde : null,
+          retentionDays: j.retention_days,
+          sampleS: j.history_sample_interval_s,
+        });
+      }).catch(() => {});
+    };
     load();
+    loadStats();
     const id = setInterval(load, 30000);
-    return () => { cancelled = true; clearInterval(id); };
+    const idStats = setInterval(loadStats, 300000);
+    return () => { cancelled = true; clearInterval(id); clearInterval(idStats); };
   }, [activeDevice.id]);
 
   // ── Antigüedad / estado derivado ──
@@ -374,7 +393,7 @@ function App() {
               <div className="meta">
                 <span><i className="bi bi-router"></i> {activeDevice.ip}</span>
                 <span><i className="bi bi-hdd"></i> {activeDevice.model}</span>
-                <span><i className="bi bi-clock-history"></i> Última lectura: {ageText}</span>
+                <span><i className="bi bi-clock-history"></i> Última lectura: <span className="age-text">{ageText}</span></span>
               </div>
             </div>
           </div>
@@ -431,7 +450,7 @@ function App() {
         </div>
 
         <div className="panels-row" style={{ ['--stagger']: 2, gridTemplateColumns: '1.7fr 1fr' }}>
-          <HistoryChart series={series} phaseMode={phaseMode} hours={6} />
+          <HistoryChart series={series} phaseMode={phaseMode} hours={6} stats={histStats} />
           <LoadAnalysisPanel values={values} />
         </div>
 

@@ -1,6 +1,24 @@
 // Charts.jsx — historical voltage/current/load chart
 
-function HistoryChart({ series, phaseMode, hours }) {
+// Línea informativa: cuántos puntos hay guardados en BD y la política de
+// retención/cadencia REAL que reporta el servidor (no valores cableados).
+function _statsLine(stats) {
+  if (!stats) return null;
+  const fmt = iso => {
+    try {
+      const d = new Date(iso);
+      return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    } catch (_) { return ''; }
+  };
+  if (!stats.filas) return 'Sin datos guardados aún';
+  const cadencia = stats.sampleS >= 60
+    ? `${Math.round(stats.sampleS / 60)} min`
+    : `${stats.sampleS} s`;
+  const desde = stats.desde ? ` · desde ${fmt(stats.desde)}` : '';
+  return `${Number(stats.filas).toLocaleString()} puntos guardados${desde} · se conservan ${stats.retentionDays} días (muestra cada ${cadencia})`;
+}
+
+function HistoryChart({ series, phaseMode, hours, stats }) {
   const W = 1100, H = 240;
   const padL = 50, padR = 20, padT = 24, padB = 32;
   const innerW = W - padL - padR;
@@ -77,6 +95,12 @@ function HistoryChart({ series, phaseMode, hours }) {
             {l.name}
           </span>
         ))}
+        {stats && (
+          <span className="leg-item" style={{ marginLeft: 'auto', color: 'var(--text-dim)', textTransform: 'none', letterSpacing: '0.04em' }}
+                title="Datos guardados en la base; los más viejos se limpian automáticamente">
+            <i className="bi bi-database" style={{ fontSize: 11 }}></i> {_statsLine(stats)}
+          </span>
+        )}
       </div>
       <div className="chart-svg-wrap">
         {empty && (

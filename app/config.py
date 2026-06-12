@@ -19,8 +19,8 @@ def _int(name: str, default: int) -> int:
 
 # --- Polling / muestreo (segundos) --- #
 POLL_INTERVAL            = _int('POLL_INTERVAL', 2)
-METRICS_SAMPLE_INTERVAL_S = _int('METRICS_SAMPLE_INTERVAL_S', 30)
-HISTORY_SAMPLE_INTERVAL_S = _int('HISTORY_SAMPLE_INTERVAL_S', 30)
+METRICS_SAMPLE_INTERVAL_S = _int('METRICS_SAMPLE_INTERVAL_S', 60)
+HISTORY_SAMPLE_INTERVAL_S = _int('HISTORY_SAMPLE_INTERVAL_S', 60)
 SNMP_CLIENT_TTL_S        = _int('SNMP_CLIENT_TTL_S', 300)
 
 # --- Retención (días) --- #

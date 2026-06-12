@@ -1,7 +1,9 @@
 from flask import Blueprint, render_template, request, jsonify, current_app, Response, redirect, url_for
 from flask_login import login_required
+from app import config
 from app.permisos import permiso_requerido, requiere_rol
 from app.services.connection_tracker import tracker
+from datetime import datetime
 import requests
 import re
 import ipaddress
@@ -356,6 +358,24 @@ def ups_history(device_id):
     return jsonify(datos)
 
 
+@monitoreo_bp.route('/api/monitoreo/historico-stats')
+@login_required
+@permiso_requerido('scada')
+def historico_stats():
+    """Cuántos puntos hay guardados en ups_chart_history (por dispositivo y
+    total), junto con la política de retención y la cadencia de muestreo
+    vigentes — para que la UI diga la verdad aunque cambie el .env."""
+    db = current_app.db
+    devices = db.obtener_stats_historial()
+    return jsonify({
+        'status': 'ok',
+        'devices': devices,
+        'total': sum(d.get('filas') or 0 for d in devices),
+        'retention_days': config.HISTORY_RETENTION_DAYS,
+        'history_sample_interval_s': config.HISTORY_SAMPLE_INTERVAL_S,
+    })
+
+
 @monitoreo_bp.route('/api/datos/historico')
 @login_required
 @permiso_requerido('scada')
@@ -614,6 +634,131 @@ def refrescar_eventos_ups(device_id):
     eventos = collect_device(dev)
     n = db.insertar_eventos_ups(device_id, eventos) if eventos else 0
     return jsonify({'status': 'ok', 'colectados': len(eventos), 'insertados': n})
+
+
+# =========================================================================
+# REPORTE DE ESTADO (hoja imprimible membretada)
+# =========================================================================
+
+def _sparkline(rows, field, w=220, h=44):
+    """Polyline(s) SVG para una serie del historial. Los NULL cortan el trazo
+    (hueco honesto, igual que Charts.jsx); si toda la serie es NULL devuelve
+    None y el template lo dice explícitamente."""
+    vals = [r.get(field) for r in rows]
+    nums = [float(v) for v in vals if v is not None]
+    if not nums:
+        return None
+    y0, y1 = min(nums), max(nums)
+    span = (y1 - y0) or 1.0
+    segs, cur = [], []
+    n = max(len(vals) - 1, 1)
+    for i, v in enumerate(vals):
+        if v is None:
+            if len(cur) > 1:
+                segs.append(' '.join(cur))
+            cur = []
+            continue
+        x = i / n * w
+        y = h - (float(v) - y0) / span * (h - 4) - 2
+        cur.append(f'{x:.1f},{y:.1f}')
+    if len(cur) > 1:
+        segs.append(' '.join(cur))
+    return {
+        'segments': segs, 'w': w, 'h': h,
+        'min': y0, 'max': y1,
+        'avg': sum(nums) / len(nums),
+        'last': nums[-1],
+        'gaps': any(v is None for v in vals),
+    }
+
+
+_REPORT_MODE = {
+    'battery': ('EN BATERÍA', 'warn'),
+    'bypass':  ('EN BYPASS', 'warn'),
+    'fault':   ('FALLA', 'err'),
+    'online':  ('EN LÍNEA', 'ok'),
+}
+
+
+def _report_status(conn_state, estado):
+    """Etiqueta de estado para el reporte (mismo mapeo que el SCADA)."""
+    if conn_state.get('status') == 'offline':
+        return ('SIN CONEXIÓN', 'err')
+    if not estado:
+        return ('SIN DATOS', 'warn')
+    ps = str(estado.get('power_mode') or '').lower()
+    if 'battery' in ps or 'bater' in ps or 'descarg' in ps:
+        return _REPORT_MODE['battery']
+    if 'bypass' in ps:
+        return _REPORT_MODE['bypass']
+    if 'fault' in ps or 'falla' in ps:
+        return _REPORT_MODE['fault']
+    return _REPORT_MODE['online']
+
+
+@monitoreo_bp.route('/monitoreo/reporte/<int:device_id>')
+@login_required
+@permiso_requerido('scada')
+def reporte_ups(device_id):
+    """Hoja de estado imprimible (membrete LBS). El PDF lo genera el navegador
+    con Imprimir/Guardar — sin dependencias de render en el servidor."""
+    horas = request.args.get('horas', 24, type=int)
+    horas = min(max(horas, 1), 168)
+
+    db = current_app.db
+    monitor = getattr(current_app, 'monitor', None)
+    dev = next((d for d in db.obtener_monitoreo_ups() if d.get('id') == device_id), None)
+    if not dev:
+        return jsonify({'status': 'error', 'mensaje': 'Dispositivo no encontrado'}), 404
+
+    estado = db.obtener_ultimo_estado(device_id)
+    conn_state = tracker.get_state(device_id)
+    caps = _caps_for(db, monitor, device_id, dev) or {}
+
+    # Descargas: contador propio del UPS si lo expone; si no, las del portal.
+    ciclos = (estado or {}).get('ciclos_descarga')
+    if caps.get('has_cycles') and ciclos is not None:
+        descargas = {'valor': ciclos, 'fuente': 'Contador del UPS'}
+    else:
+        descargas = {'valor': tracker.get_discharge_count(device_id),
+                     'fuente': 'Registradas por el portal'}
+
+    rows = db.obtener_historial_device(device_id, horas)
+    temp_field = 'temperatura_ambiente' if caps.get('has_ambient') else 'temperatura'
+    sparklines = {
+        'carga':   _sparkline(rows, 'carga_pct'),
+        'bateria': _sparkline(rows, 'bateria_pct'),
+        'temp':    _sparkline(rows, temp_field),
+        'v_out':   _sparkline(rows, 'voltaje_out_l1'),
+        'v_in':    _sparkline(rows, 'voltaje_in_l1'),
+    }
+
+    status_txt, status_cls = _report_status(conn_state, estado)
+    ts_lectura = None
+    if estado and estado.get('timestamp'):
+        try:
+            ts_lectura = datetime.fromisoformat(estado['timestamp']).strftime('%d/%m/%Y %H:%M:%S')
+        except (TypeError, ValueError):
+            ts_lectura = estado['timestamp']
+
+    return render_template(
+        'lbs/reporte.html',
+        dev=dev,
+        estado=estado or {},
+        caps=caps,
+        conn=conn_state,
+        status_txt=status_txt,
+        status_cls=status_cls,
+        ts_lectura=ts_lectura,
+        descargas=descargas,
+        sparklines=sparklines,
+        temp_label='Temp. ambiente' if caps.get('has_ambient') else 'Temp. batería',
+        trifasico=(caps.get('phases') == 3),
+        horas=horas,
+        puntos=len(rows),
+        generado=datetime.now().strftime('%d/%m/%Y %H:%M'),
+        retention_days=config.HISTORY_RETENTION_DAYS,
+    )
 
 
 # =========================================================================

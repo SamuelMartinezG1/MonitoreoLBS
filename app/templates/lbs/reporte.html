@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Reporte de estado · {{ dev.nombre or 'UPS' }} · LBS Monitor</title>
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='lbs/assets/lbs-logo.svg') }}" />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='lbs/styles/report.css') }}" />
+</head>
+<body>
+
+{# Valor honesto: imprime la medición o lo dice explícitamente. Nunca un 0 inventado. #}
+{% macro medida(v, unidad='', dec=1) -%}
+  {%- if v is none -%}
+    <span class="sin-dato">Sin medición disponible</span>
+  {%- else -%}
+    <b class="val">{{ '%.*f'|format(dec, v|float) }}</b><small> {{ unidad }}</small>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro sparkcard(titulo, sp, unidad) %}
+  <div class="spark-card">
+    <div class="spark-head">
+      <span class="spark-title">{{ titulo }}</span>
+      {% if sp %}<span class="spark-last">{{ '%.1f'|format(sp.last) }} {{ unidad }}</span>{% endif %}
+    </div>
+    {% if sp %}
+      <svg viewBox="0 0 {{ sp.w }} {{ sp.h }}" preserveAspectRatio="none" class="spark-svg">
+        {% for s in sp.segments %}
+          <polyline points="{{ s }}" fill="none" stroke="currentColor" stroke-width="1.6" />
+        {% endfor %}
+      </svg>
+      <div class="spark-stats">
+        <span>mín <b>{{ '%.1f'|format(sp.min) }}</b></span>
+        <span>prom <b>{{ '%.1f'|format(sp.avg) }}</b></span>
+        <span>máx <b>{{ '%.1f'|format(sp.max) }}</b></span>
+        {% if sp.gaps %}<span class="gap-note">con huecos sin conexión</span>{% endif %}
+      </div>
+    {% else %}
+      <div class="spark-empty">Sin medición disponible en el periodo</div>
+    {% endif %}
+  </div>
+{% endmacro %}
+
+<div class="sheet">
+
+  <!-- Membrete -->
+  <header class="membrete">
+    <img src="{{ url_for('static', filename='lbs/assets/lbs-logo.svg') }}" alt="LBS" class="logo" />
+    <div class="mb-title">
+      <h1>Reporte de estado de UPS</h1>
+      <div class="mb-sub">LBS Monitor · Generado el {{ generado }} · Periodo analizado: últimas {{ horas }} h</div>
+    </div>
+  </header>
+
+  <!-- Identificación + estado -->
+  <section class="ident">
+    <table class="ident-table">
+      <tr><th>Equipo</th><td>{{ dev.nombre or '—' }}</td><th>Protocolo</th><td>{{ (dev.protocolo or '—')|upper }}</td></tr>
+      <tr><th>Dirección IP</th><td>{{ dev.ip or '—' }}</td><th>Perfil</th><td>{{ dev.ups_type or '—' }}</td></tr>
+      <tr><th>Sitio</th><td>{{ dev.sitio_nombre or '—' }}</td><th>Fases</th><td>{{ 'Trifásico' if trifasico else 'Monofásico' }}</td></tr>
+    </table>
+    <div class="estado {{ status_cls }}">
+      <div class="estado-txt">{{ status_txt }}</div>
+      <div class="estado-sub">
+        {% if ts_lectura %}Última lectura: {{ ts_lectura }}{% else %}Sin lecturas registradas{% endif %}
+        {% if conn.offline_reason_label %}<br/>Causa: {{ conn.offline_reason_label }}{% endif %}
+      </div>
+    </div>
+  </section>
+
+  <!-- KPIs -->
+  <section class="kpis">
+    <div class="kpi">
+      <label>Carga conectada</label>
+      <div class="kpi-v">{{ medida(estado.carga_pct, '%', 0) }}</div>
+    </div>
+    <div class="kpi">
+      <label>Batería</label>
+      <div class="kpi-v">{{ medida(estado.bateria_pct, '%', 0) }}</div>
+    </div>
+    <div class="kpi">
+      <label>{{ temp_label }}</label>
+      <div class="kpi-v">{{ medida(estado.temperatura_ambiente if caps.get('has_ambient') else estado.temperatura, '°C', 1) }}</div>
+    </div>
+    <div class="kpi">
+      <label>Descargas de batería</label>
+      <div class="kpi-v"><b class="val">{{ descargas.valor }}</b></div>
+      <small class="kpi-src">{{ descargas.fuente }}</small>
+    </div>
+  </section>
+
+  <!-- Mini-gráficas -->
+  <section class="sparks">
+    {{ sparkcard('Carga conectada (%)', sparklines.carga, '%') }}
+    {{ sparkcard('Batería (%)', sparklines.bateria, '%') }}
+    {{ sparkcard(temp_label ~ ' (°C)', sparklines.temp, '°C') }}
+    {{ sparkcard('Voltaje de salida L1 (V)', sparklines.v_out, 'V') }}
+  </section>
+
+  <!-- Tabla eléctrica -->
+  <section class="electrica">
+    <h2>Parámetros eléctricos · última lectura</h2>
+    <table class="el-table">
+      <tr>
+        <th>V. entrada L1</th><td>{{ medida(estado.voltaje_in_l1, 'V') }}</td>
+        <th>V. salida L1</th><td>{{ medida(estado.voltaje_out_l1, 'V') }}</td>
+      </tr>
+      {% if trifasico %}
+      <tr>
+        <th>V. entrada L2</th><td>{{ medida(estado.voltaje_in_l2, 'V') }}</td>
+        <th>V. salida L2</th><td>{{ medida(estado.voltaje_out_l2, 'V') }}</td>
+      </tr>
+      <tr>
+        <th>V. entrada L3</th><td>{{ medida(estado.voltaje_in_l3, 'V') }}</td>
+        <th>V. salida L3</th><td>{{ medida(estado.voltaje_out_l3, 'V') }}</td>
+      </tr>
+      {% endif %}
+      <tr>
+        <th>Frecuencia entrada</th><td>{{ medida(estado.frecuencia_in, 'Hz') }}</td>
+        <th>Frecuencia salida</th><td>{{ medida(estado.frecuencia_out, 'Hz') }}</td>
+      </tr>
+      <tr>
+        <th>Corriente salida L1</th><td>{{ medida(estado.corriente_out_l1, 'A') }}</td>
+        <th>V. batería</th><td>{{ medida(estado.voltaje_bateria, 'V') }}</td>
+      </tr>
+      <tr>
+        <th>Autonomía estimada</th><td>{{ medida(estado.battery_remain_time, 'min', 0) }}</td>
+        <th>Modo de operación</th><td><b class="val">{{ estado.power_mode or '—' }}</b></td>
+      </tr>
+    </table>
+  </section>
+
+  <!-- Pie -->
+  <footer class="pie">
+    Generado por LBS Monitor · {{ generado }} · {{ puntos }} puntos de medición en el periodo ·
+    Los huecos en las gráficas indican periodos sin conexión; no se interpolan datos ·
+    Histórico conservado: {{ retention_days }} días
+  </footer>
+
+</div>
+
+<div class="no-print acciones">
+  <button onclick="window.print()" class="btn-print">🖨 Imprimir / Guardar PDF</button>
+  <a href="/monitoreo?dev={{ dev.id }}" class="btn-back">← Volver al monitoreo</a>
+</div>
+
+</body>
+</html>

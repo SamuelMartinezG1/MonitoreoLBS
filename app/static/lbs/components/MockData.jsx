@@ -75,6 +75,7 @@
     getHistorial:      (id, horas = 6)   => _json('GET', `/api/ups-history/${id}?horas=${horas}`),
     getCalidadEnergia: (id, horas = 24)  => _json('GET', `/api/monitoreo/calidad-energia/${id}?horas=${horas}`),
     getPerfilHorario:  (id, horas = 24)  => _json('GET', `/api/monitoreo/perfil-horario/${id}?horas=${horas}`),
+    getHistoricoStats: ()                => _json('GET', '/api/monitoreo/historico-stats'),
     getDatos:          (id, horas, campo) => {
       const q = new URLSearchParams({ device_id: id, horas: horas || 6 });
       if (campo) q.set('campo', campo);
